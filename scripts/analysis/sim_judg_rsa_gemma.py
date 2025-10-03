@@ -1,24 +1,150 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-OOO RSA for Gemma with SOC injection + pooling options (env-driven).
+RSA for Gemma with Social-Token Injection & Pooling
+=======================================================
 
-Env toggles:
-  SOC_INJECT = full | global | none      # default: full
-  SOC_POOL   = all | exclude_soc | only_soc | locals_only | eos   # default: all
+This script computes representational similarity analysis (RSA) between a
+language model's internal representations and a human similarity matrix for the
+Odd-One-Out (OOO) social video clips. It optionally *injects* social features
+into the model via special tokens and provides several *pooling* strategies to
+summarize sequence features before RSA.
 
-Examples:
-  # Baseline: no SOC injection (pure text)
-  export SOC_INJECT=none;  export SOC_POOL=eos
-  python ooo_rsa_gemma_with_pool.py
+Pipeline (end-to-end)
+---------------------
+1) **Load model & tokenizer**
+   - Loads a Gemma Causal LM (default: ``google/gemma-2-2b``) and tokenizer.
+   - Ensures a ``pad_token`` exists; disables cache; moves to device.
 
-  # Global only, exclude SOC tokens from pooling
-  export SOC_INJECT=global; export SOC_POOL=exclude_soc
-  python ooo_rsa_gemma_with_pool.py
+2) **Load social-feature projector**
+   - A small MLP/LayerNorm stack loaded from ``SOC_PROJECTOR_CKPT`` that maps
+     social features (default 768-D) to the LM hidden size so they can replace
+     token embeddings at special positions.
 
-  # Full (global+locals), mean pool all tokens
-  export SOC_INJECT=full;   export SOC_POOL=all
-  python ooo_rsa_gemma_with_pool.py
+3) **Build dataset from index CSV (``OOO_INDEX``)**
+   - Required columns: ``clip_id, global_path, locals_path, meta_path, caption``.
+   - Loads per-clip:
+     * **Global vector** ``g``: shape ``[768]`` (clip-level).
+     * **Local vectors** ``L``: variable-length list of 768-D vectors aligned to words.
+     * **Token positions** for locals from npz/meta (if available).
+   - Constructs the *inline* text with or without special tokens depending on
+     ``SOC_INJECT`` (see below).
+
+4) **Collate (batching)**
+   - Tokenizes texts with padding -> ``input_ids``, ``attention_mask``.
+   - Packs ``g`` to a dense tensor ``[B, 768]``.
+   - Pads local vectors to ``[B, maxL, 768]`` and builds a boolean mask ``l_mask``.
+   - **Captions (strings) are not padded**; only token IDs are padded and masked.
+
+5) **Injection wrapper (``SOCWrapper``)**
+   - Looks up base token embeddings.
+   - If injection is enabled, *replaces* embeddings at:
+     * ``<SOC_G>`` with ``projector(g)`` (global signal).
+     * ``<SOC_L>`` with ``projector(L[i])`` for the first *k* local positions (local signals).
+   - Forwards through the LM; hooks (via **deepjuice**) capture layer feature maps.
+
+6) **Pooling to fixed-size vectors**
+   - Most captured maps are ``[B, T, H]``. They are reduced to ``[B, H]`` by
+     ``pool_to_2d`` according to ``SOC_POOL`` (see below). Pooling respects the
+     attention mask, so pads are ignored. ``eos`` picks the last *attended* token.
+
+7) **Dimensionality reduction & RSA**
+   - Applies sparse random projections (``get_feature_map_srps``) for efficiency.
+   - Builds a model RSM using correlation similarity (``1 - correlation distance``).
+   - Flattens upper triangles and computes **Spearman rho** vs. the human RSM
+     from ``SIM_RSM``. Results (per-layer) are saved to CSV; best layer is printed.
+   - Optionally saves per-layer pooled features to ``SAVE_FEATURES_DIR``.
+
+Environment Variables (controls)
+--------------------------------
+**Core I/O**
+- ``SOC_OUTPUT_DIR`` / ``SOC_TOKENIZER_DIR`` : tokenizer directory (if separate).
+- ``SOC_LM``      : HF model id or local path (default: ``google/gemma-2-2b``).
+- ``SOC_PROJECTOR_CKPT`` : projector checkpoint file.
+- ``SOC_OOO_INDEX``      : CSV with dataset index.
+- ``SOC_SIM_RSM``        : CSV for human similarity RSM.
+- ``SOC_SAVE_FEATS``     : directory to save per-layer features (npz).
+- ``SOC_RESULTS_CSV``    : output CSV for RSA results.
+
+**Behavior toggles**
+- ``SOC_INJECT`` : ``full`` | ``global`` | ``none``  (default: ``full``)
+    * ``none``   : no special tokens; no injection.
+    * ``global`` : prepend ``<SOC_G>``; inject only the global vector.
+    * ``full``   : ``<SOC_G>`` + ``<SOC_L>`` inserted after selected words; inject both.
+- ``SOC_POOL``   : ``all`` | ``exclude_soc`` | ``only_soc`` | ``locals_only`` | ``eos`` (default: ``all``)
+    * ``all``          : mean over all attended tokens (includes SOC tokens).
+    * ``exclude_soc``  : mean over attended tokens **excluding** ``<SOC_G>, <SOC_L>``; falls back to ``all`` if empty.
+    * ``only_soc``     : mean over SOC tokens only; falls back to ``all`` if none.
+    * ``locals_only``  : mean over ``<SOC_L>`` only; falls back to ``all`` if none.
+    * ``eos``          : take the final *attended* hidden state (no averaging).
+
+**Runtime**
+- ``SOC_BATCH``   : batch size (default: 8).
+- ``SOC_WORKERS`` : DataLoader workers (default: 8).
+- ``SOC_VERBOSE`` : ``1`` enables logs (default: ``1``).
+- ``SOC_LOG_EXAMPLES`` : how many examples to print (default: 3).
+- ``SOC_LOG_KEEP_UIDS``: how many layer UIDs to print from warmup (default: 25).
+- ``SOC_DRYRUN``  : ``1`` processes one batch then exits (default: ``0``).
+
+Assumptions & Fallbacks
+-----------------------
+- The tokenizer must contain ``<SOC_G>`` (and ideally ``<SOC_L>``) when
+  ``SOC_INJECT`` is ``global`` or ``full``; otherwise injection is disabled and
+  a clear error is raised for the global token.
+- If the number of ``<SOC_L>`` tokens does not match the number of available
+  local vectors, the first ``k = min(counts)`` positions are injected and a log
+  warning is emitted.
+- Pooling modes that would select *no* tokens safely fall back to ``all``.
+- Padding: token IDs are padded, but attention masks prevent pads from
+  influencing attention or pooling. Local vectors are zero-padded and masked.
+
+Inputs
+------
+- ``OOO_INDEX`` CSV with columns:
+  ``clip_id, global_path, locals_path, meta_path, caption``.
+- ``global_path`` : npy/npz -> float32 vector ``[768]``.
+- ``locals_path`` : npz with multiple arrays of ``[768]`` + optional indices.
+- ``meta_path``   : pickle containing tokens/words and optional local positions.
+- ``SIM_RSM``     : CSV square matrix ``[N, N]`` of human similarities.
+
+Outputs
+-------
+- ``SAVE_FEATURES_DIR``: one ``.npz`` per layer containing pooled features and uids.
+- ``SOC_RESULTS_CSV``  : per-layer Spearman rho/p-values vs. human RSM.
+- Stdout prints the best-performing layer and basic diagnostics.
+
+Quickstart
+----------
+Baseline (no injection; last-token readout):
+    $ export SOC_INJECT=none
+    $ export SOC_POOL=eos
+    $ python ooo_rsa_gemma_with_pool.py
+
+Global-only injection but *exclude* SOC tokens from pooling (tests indirect effects):
+    $ export SOC_INJECT=global
+    $ export SOC_POOL=exclude_soc
+    $ python ooo_rsa_gemma_with_pool.py
+
+Full injection (global+locals), average all tokens:
+    $ export SOC_INJECT=full
+    $ export SOC_POOL=all
+    $ python ooo_rsa_gemma_with_pool.py
+
+Why these knobs matter
+----------------------
+- ``SOC_INJECT`` decides **what** social information is written into the sequence
+  (none / global / global+local).
+- ``SOC_POOL`` decides **where** you **read** the representation from (all tokens,
+  exclude SOC, SOC-only, locals-only, or last attended token). This lets you
+  distinguish direct readout of injected signals from *indirect propagation*
+  into normal tokens—critical for causal claims in RSA.
+
+Dependencies
+------------
+- ``transformers``, ``torch``, ``numpy``, ``pandas``, ``scikit-learn``,
+  ``scipy``, ``tqdm``, and **deepjuice** (``get_feature_maps``,
+  ``get_feature_map_srps``).
+
 """
 import os, re, json, pickle
 from typing import List, Dict, Any, Tuple, Optional
