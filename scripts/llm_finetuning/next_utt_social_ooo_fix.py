@@ -47,7 +47,7 @@ SOC_L = "<SOC_L>"
 # ---------------------- Metrics I/O ----------------------
 METRIC_COLS = [
     "split","epoch","step","loss","ppl","tokens","tok_per_s","dt_s",
-    "lr_proj","lr_dino","gpu_mem_mb","g_has","l_has",
+    "lr_proj","lr_dino","gpu_mem_mb","g_has","l_has","ablation_mode",
     "val_ppl_vis","val_ppl_no_vis","test_ppl_vis","test_ppl_no_vis"
 ]
 def init_metrics_csv(path: str):
@@ -268,16 +268,21 @@ class GemmaWithInjection(nn.Module):
         assert self.id_soc_g != self.tokenizer.unk_token_id, f"{SOC_G} not in tokenizer"
         assert self.id_soc_l != self.tokenizer.unk_token_id, f"{SOC_L} not in tokenizer"
 
-    def forward(self, input_ids, attention_mask, labels, proj_global, proj_locals, inject_visuals=True):
+    def forward(self, input_ids, attention_mask, labels, proj_global, proj_locals, inject_visuals=True, ablation_mode="both"):
+        """
+        ablation_mode: 'both', 'global_only', 'local_only', 'none'
+        """
         emb = self.lm.get_input_embeddings()(input_ids)  # [B,T,H]
         if inject_visuals:
             dtype = emb.dtype
-            if proj_global is not None:
+            # Global token injection
+            if ablation_mode in ("both", "global_only") and proj_global is not None:
                 pos_g = (input_ids == self.id_soc_g).nonzero(as_tuple=False)
                 if pos_g.numel() > 0:
                     b = pos_g[:, 0]; t = pos_g[:, 1]
                     emb[b, t, :] = proj_global[b, :].to(dtype=dtype)
-            if proj_locals is not None:
+            # Local token injection
+            if ablation_mode in ("both", "local_only") and proj_locals is not None:
                 B = input_ids.size(0)
                 for b in range(B):
                     lpos = (input_ids[b] == self.id_soc_l).nonzero(as_tuple=False).squeeze(-1)
@@ -938,9 +943,11 @@ def train_and_eval(
     save_every_epochs: int,
     save_adapter_only: bool,
     grad_clip: float,
-    align_eps:float,
+    align_eps: float,
     caption_nextword: bool,
-    train_id_list: str, val_id_list: str, test_id_list: str, val_frac_of_train: float
+    train_id_list: str, val_id_list: str, test_id_list: str, val_frac_of_train: float,
+    train_ablation_mode: str,
+    eval_ablations: List[str]
 ):
     is_dist, rank, local_rank, world, device = init_distributed()
     if rank == 0: print(f"[DDP] is_dist={is_dist} world={world} device={device}")
@@ -977,6 +984,7 @@ def train_and_eval(
         "metrics_csv": metrics_csv, "resume_path": resume_path,
         "save_every_epochs": save_every_epochs, "save_adapter_only": save_adapter_only,
         "grad_clip": grad_clip, "caption_nextword": caption_nextword,
+        "train_ablation_mode": train_ablation_mode, "eval_ablations": eval_ablations,
     }
     if rank == 0:
         with open(os.path.join(output_dir, "run_config.json"), "w") as f: json.dump(run_config, f, indent=2)
@@ -1133,7 +1141,7 @@ def train_and_eval(
         dtype = next(p).dtype if p is not None else torch.float32
         return x.to(device=device, dtype=dtype)
 
-    def run_epoch(loader, epoch_idx: int, train: bool, inject_visuals: bool, split_name: str):
+    def run_epoch(loader, epoch_idx: int, train: bool, inject_visuals: bool, split_name: str, ablation_mode: str = "both"):
         if train:
             projector.train(True)
             if isinstance(dino, DDP): dino.train(any(p.requires_grad for p in dino.module.parameters()))
@@ -1259,7 +1267,8 @@ def train_and_eval(
 
             out = gemma(
                 input_ids=input_ids, attention_mask=attention_mask, labels=labels,
-                proj_global=proj_g, proj_locals=proj_l_list, inject_visuals=inject_visuals
+                proj_global=proj_g, proj_locals=proj_l_list, inject_visuals=inject_visuals,
+                ablation_mode=ablation_mode
             )
             loss = out.loss
 
@@ -1287,12 +1296,13 @@ def train_and_eval(
                 gpu_mem_mb = torch.cuda.max_memory_allocated(device) / (1024**2)
                 print(f"[rank0] {split_name} ep{epoch_idx} step {step+1}/{len(loader)} "
                       f"avg_loss={avg:.4f} ppl={ppl:.2f} tok={running_tok} tok/s={tok_per_s:.0f} "
-                      f"dt={dt:.3f}s mem={gpu_mem_mb:.0f}MB g_has={g_has_total} l_has={l_has_total}")
+                      f"dt={dt:.3f}s mem={gpu_mem_mb:.0f}MB g_has={g_has_total} l_has={l_has_total} mode={ablation_mode}")
                 write_metric_row(metrics_path, split=split_name, epoch=epoch_idx, step=step+1, loss=avg, ppl=ppl,
                                  tokens=toks, tok_per_s=tok_per_s, dt_s=dt,
                                  lr_proj=opt.param_groups[0]["lr"],
                                  lr_dino=opt.param_groups[-1]["lr"] if len(opt.param_groups)>1 else 0.0,
-                                 gpu_mem_mb=gpu_mem_mb, g_has=g_has_total, l_has=l_has_total)
+                                 gpu_mem_mb=gpu_mem_mb, g_has=g_has_total, l_has=l_has_total,
+                                 ablation_mode=ablation_mode)
                 running_loss, running_tok = 0.0, 0
 
             max_steps = limit_train_steps if train else limit_val_steps
@@ -1311,33 +1321,72 @@ def train_and_eval(
         if rank == 0:
             write_metric_row(metrics_path, split=split_name, epoch=epoch_idx, step=-1, loss=avg_loss, ppl=ppl,
                              gpu_mem_mb=torch.cuda.max_memory_allocated(device)/(1024**2),
-                             g_has=g_has_total, l_has=l_has_total)
+                             g_has=g_has_total, l_has=l_has_total, ablation_mode=ablation_mode)
         return avg_loss, ppl
 
     best_epoch = start_epoch - 1
+    train_ablation = run_config.get("train_ablation_mode", "both")
+    eval_ablations = run_config.get("eval_ablations", ["both", "none"])
+
     for ep in range(start_epoch, epochs+1):
-        tr_loss, tr_ppl = run_epoch(train_loader, ep, train=True,  inject_visuals=True,  split_name="train")
-        v1_loss, v1_ppl = run_epoch(val_loader,   ep, train=False, inject_visuals=True,  split_name="val_vis")
-        v0_loss, v0_ppl = run_epoch(val_loader,   ep, train=False, inject_visuals=False, split_name="val_novis")
+        # Training with specified ablation mode
+        tr_loss, tr_ppl = run_epoch(train_loader, ep, train=True, inject_visuals=True,
+                                     split_name="train", ablation_mode=train_ablation)
+
+        # Evaluation with multiple ablation modes
+        val_results = {}
+        for abl_mode in eval_ablations:
+            inject = (abl_mode != "none")
+            split_suffix = abl_mode if abl_mode != "both" else "vis"
+            split_suffix = "novis" if abl_mode == "none" else split_suffix
+            v_loss, v_ppl = run_epoch(val_loader, ep, train=False, inject_visuals=inject,
+                                      split_name=f"val_{split_suffix}", ablation_mode=abl_mode)
+            val_results[abl_mode] = (v_loss, v_ppl)
+
         if rank == 0:
-            print(f"[Epoch {ep:02d}] train ppl {tr_ppl:.2f} | val ppl (vis) {v1_ppl:.2f} vs (no-vis) {v0_ppl:.2f}")
-            write_metric_row(metrics_path, split="train_summary", epoch=ep, step=-1, loss=tr_loss, ppl=tr_ppl)
-            write_metric_row(metrics_path, split="val_summary", epoch=ep, step=-1,
-                             val_ppl_vis=v1_ppl, val_ppl_no_vis=v0_ppl)
+            ppl_str = " | ".join([f"{mode}={val_results[mode][1]:.2f}" for mode in eval_ablations])
+            print(f"[Epoch {ep:02d}] train({train_ablation}) ppl {tr_ppl:.2f} | val ppl: {ppl_str}")
+            write_metric_row(metrics_path, split="train_summary", epoch=ep, step=-1, loss=tr_loss, ppl=tr_ppl,
+                             ablation_mode=train_ablation)
+            # Write summary with backward-compatible column names
+            summary_kw = {"split": "val_summary", "epoch": ep, "step": -1}
+            if "both" in val_results:
+                summary_kw["val_ppl_vis"] = val_results["both"][1]
+            if "none" in val_results:
+                summary_kw["val_ppl_no_vis"] = val_results["none"][1]
+            write_metric_row(metrics_path, **summary_kw)
+
+        # Use "both" mode results for checkpointing (or first available mode)
+        primary_mode = "both" if "both" in val_results else eval_ablations[0]
+        primary_val_ppl = val_results[primary_mode][1]
 
         if (ep - start_epoch) % max(1, save_every_epochs) == 0:
-            save_checkpoint("last", ep, v1_ppl, output_dir, projector, dino, opt, sched, run_config, gemma.tokenizer, rank, save_adapter_only)
-        if v1_ppl < best_val:
-            best_val, best_epoch = v1_ppl, ep
-            save_checkpoint("best", ep, v1_ppl, output_dir, projector, dino, opt, sched, run_config, gemma.tokenizer, rank, save_adapter_only)
+            save_checkpoint("last", ep, primary_val_ppl, output_dir, projector, dino, opt, sched, run_config, gemma.tokenizer, rank, save_adapter_only)
+        if primary_val_ppl < best_val:
+            best_val, best_epoch = primary_val_ppl, ep
+            save_checkpoint("best", ep, primary_val_ppl, output_dir, projector, dino, opt, sched, run_config, gemma.tokenizer, rank, save_adapter_only)
 
-    t1_loss, t1_ppl = run_epoch(test_loader, epochs+1, train=False, inject_visuals=True,  split_name="test_vis")
-    t0_loss, t0_ppl = run_epoch(test_loader, epochs+1, train=False, inject_visuals=False, split_name="test_novis")
+    # Test with all ablation modes
+    test_results = {}
+    for abl_mode in eval_ablations:
+        inject = (abl_mode != "none")
+        split_suffix = abl_mode if abl_mode != "both" else "vis"
+        split_suffix = "novis" if abl_mode == "none" else split_suffix
+        t_loss, t_ppl = run_epoch(test_loader, epochs+1, train=False, inject_visuals=inject,
+                                  split_name=f"test_{split_suffix}", ablation_mode=abl_mode)
+        test_results[abl_mode] = (t_loss, t_ppl)
+
     if rank == 0:
-        print(f"[TEST] ppl (vis) {t1_ppl:.2f} vs (no-vis) {t0_ppl:.2f}")
-        print(f"[best] epoch={best_epoch} val_vis_ppl={best_val:.4f} | checkpoints → {os.path.join(output_dir,'checkpoints')}")
-        write_metric_row(metrics_path, split="test_summary", epoch=epochs+1, step=-1,
-                         test_ppl_vis=t1_ppl, test_ppl_no_vis=t0_ppl)
+        test_ppl_str = " | ".join([f"{mode}={test_results[mode][1]:.2f}" for mode in eval_ablations])
+        print(f"[TEST] ppl: {test_ppl_str}")
+        print(f"[best] epoch={best_epoch} val_ppl({primary_mode})={best_val:.4f} | checkpoints → {os.path.join(output_dir,'checkpoints')}")
+        # Write summary with backward-compatible column names
+        test_summary_kw = {"split": "test_summary", "epoch": epochs+1, "step": -1}
+        if "both" in test_results:
+            test_summary_kw["test_ppl_vis"] = test_results["both"][1]
+        if "none" in test_results:
+            test_summary_kw["test_ppl_no_vis"] = test_results["none"][1]
+        write_metric_row(metrics_path, **test_summary_kw)
     if is_dist:
         dist.barrier(); dist.destroy_process_group()
 
@@ -1404,6 +1453,13 @@ def main():
                     help="Path to text/CSV file listing test clip_id values.")
     ap.add_argument("--val-frac-of-train", type=float, default=0.1,
                     help="If no --val-id-list provided, take this fraction of train ids to form val.")
+    # Ablation study arguments
+    ap.add_argument("--train-ablation-mode", type=str, default="both",
+                    choices=["both", "global_only", "local_only", "none"],
+                    help="Which visual tokens to use during training: 'both' (default), 'global_only', 'local_only', or 'none'.")
+    ap.add_argument("--eval-ablations", type=str, nargs="+", default=["both", "none"],
+                    choices=["both", "global_only", "local_only", "none"],
+                    help="List of ablation modes to evaluate (default: both none). Use to run comprehensive ablation studies.")
 
     args = ap.parse_args()
 
@@ -1426,7 +1482,8 @@ def main():
         dino_local_batch=args.dino_local_batch, dino_input_size=args.dino_input_size,
         metrics_csv=args.metrics_csv, resume_path=args.resume, save_every_epochs=args.save_every_epochs,
         save_adapter_only=args.save_adapter_only, grad_clip=args.grad_clip, align_eps=args.align_eps,
-        caption_nextword=args.caption_nextword, train_id_list=args.train_id_list, val_id_list=args.val_id_list, test_id_list=args.test_id_list, val_frac_of_train=args.val_frac_of_train
+        caption_nextword=args.caption_nextword, train_id_list=args.train_id_list, val_id_list=args.val_id_list, test_id_list=args.test_id_list, val_frac_of_train=args.val_frac_of_train,
+        train_ablation_mode=args.train_ablation_mode, eval_ablations=args.eval_ablations
     )
 
 if __name__ == "__main__":
