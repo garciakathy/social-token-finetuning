@@ -52,7 +52,6 @@ BATCH_SIZE=8                                   # per-GPU batch size
 LR_PROJ=1e-4
 LR_DINO=2e-5
 WARMUP=888
-MASTER_PORT=29500                              # change if port conflicts
 
 # ========================================
 # ABLATION CONFIGURATION (EDIT THESE!)
@@ -79,7 +78,7 @@ echo "Eval modes: $EVAL_ABLATIONS"
 echo "Date: $(date)"
 echo "========================================="
 
-torchrun --nproc_per_node=4 --master_port $MASTER_PORT \
+torchrun --nproc_per_node=4 \
   /home/kgarci18/kg/code/social-token-finetuning/scripts/llm_finetuning/next_utt_social_ooo_fix.py \
   --parent-dir "$PARENT_DIR" \
   --output-dir "$OUT_DIR" \

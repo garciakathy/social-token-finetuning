@@ -1328,9 +1328,19 @@ def train_and_eval(
     train_ablation = run_config.get("train_ablation_mode", "both")
     eval_ablations = run_config.get("eval_ablations", ["both", "none"])
 
+    # Validate training configuration
+    if train_ablation == "none":
+        if rank == 0:
+            print("[WARNING] Cannot train with ablation_mode='none' (no trainable parameters).")
+            print("[WARNING] Switching to evaluation-only mode. Use 'both', 'global_only', or 'local_only' for training.")
+        # Skip training, just do evaluation
+        start_epoch = epochs + 1
+
     for ep in range(start_epoch, epochs+1):
         # Training with specified ablation mode
-        tr_loss, tr_ppl = run_epoch(train_loader, ep, train=True, inject_visuals=True,
+        # Set inject_visuals=False when train_ablation="none" to avoid gradient errors
+        inject_train = (train_ablation != "none")
+        tr_loss, tr_ppl = run_epoch(train_loader, ep, train=True, inject_visuals=inject_train,
                                      split_name="train", ablation_mode=train_ablation)
 
         # Evaluation with multiple ablation modes

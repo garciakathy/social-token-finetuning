@@ -46,7 +46,6 @@ BATCH_SIZE=8                                   # per-GPU batch size
 LR_PROJ=1e-4
 LR_DINO=2e-5
 WARMUP=888
-MASTER_PORT=29500                              # change if port conflicts
 
 # Create directories
 mkdir -p "$(dirname "$BASE_OUT_DIR")" logs
@@ -70,7 +69,7 @@ echo "[1/4] Training with BOTH global and local tokens..."
 OUT_DIR="${BASE_OUT_DIR}/both_tokens"
 mkdir -p "$OUT_DIR"
 
-torchrun --nproc_per_node=4 --master_port $MASTER_PORT "$SCRIPT_PATH" \
+torchrun --nproc_per_node=4 "$SCRIPT_PATH" \
   --parent-dir "$PARENT_DIR" \
   --output-dir "$OUT_DIR" \
   --col-transcript "transcript_json" \
@@ -107,7 +106,7 @@ echo "[2/4] Training with GLOBAL ONLY tokens..."
 OUT_DIR="${BASE_OUT_DIR}/global_only"
 mkdir -p "$OUT_DIR"
 
-torchrun --nproc_per_node=4 --master_port $MASTER_PORT "$SCRIPT_PATH" \
+torchrun --nproc_per_node=4 "$SCRIPT_PATH" \
   --parent-dir "$PARENT_DIR" \
   --output-dir "$OUT_DIR" \
   --col-transcript "transcript_json" \
@@ -144,7 +143,7 @@ echo "[3/4] Training with LOCAL ONLY tokens..."
 OUT_DIR="${BASE_OUT_DIR}/local_only"
 mkdir -p "$OUT_DIR"
 
-torchrun --nproc_per_node=4 --master_port $MASTER_PORT "$SCRIPT_PATH" \
+torchrun --nproc_per_node=4 "$SCRIPT_PATH" \
   --parent-dir "$PARENT_DIR" \
   --output-dir "$OUT_DIR" \
   --col-transcript "transcript_json" \
@@ -177,11 +176,14 @@ echo "[3/4] LOCAL ONLY training complete @ $(date)"
 
 # --- Ablation 4: NO TOKENS (baseline) ---
 echo ""
-echo "[4/4] Training with NO visual tokens (baseline)..."
+echo "[4/4] Evaluating with NO visual tokens (baseline - no training)..."
+echo "Note: This evaluates the frozen LLM without any visual tokens or training."
 OUT_DIR="${BASE_OUT_DIR}/no_tokens"
 mkdir -p "$OUT_DIR"
 
-torchrun --nproc_per_node=4 --master_port $MASTER_PORT "$SCRIPT_PATH" \
+# Note: Using --train-ablation-mode none will skip training and only evaluate
+# This is correct because there are no trainable parameters with mode "none"
+torchrun --nproc_per_node=4 "$SCRIPT_PATH" \
   --parent-dir "$PARENT_DIR" \
   --output-dir "$OUT_DIR" \
   --col-transcript "transcript_json" \
