@@ -1328,6 +1328,10 @@ def train_and_eval(
     train_ablation = run_config.get("train_ablation_mode", "both")
     eval_ablations = run_config.get("eval_ablations", ["both", "none"])
 
+    # Determine primary mode for metrics (prefer "both", fallback to first available)
+    primary_mode = "both" if "both" in eval_ablations else eval_ablations[0]
+    training_occurred = True
+
     # Validate training configuration
     if train_ablation == "none":
         if rank == 0:
@@ -1335,6 +1339,7 @@ def train_and_eval(
             print("[WARNING] Switching to evaluation-only mode. Use 'both', 'global_only', or 'local_only' for training.")
         # Skip training, just do evaluation
         start_epoch = epochs + 1
+        training_occurred = False
 
     for ep in range(start_epoch, epochs+1):
         # Training with specified ablation mode
