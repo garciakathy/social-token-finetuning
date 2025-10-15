@@ -11,19 +11,116 @@ import matplotlib.pyplot as plt
 import sys
 
 
+def analyze_direct(parent_dir, num_samples=20):
+    """Analyze embeddings by directly scanning directories (no manifest)."""
+    print("Scanning directories directly...")
+
+    parent_path = Path(parent_dir)
+    subdirs = [d for d in parent_path.iterdir() if d.is_dir()]
+    print(f"Found {len(subdirs)} subdirectories\n")
+
+    all_stats = {
+        'min_vals': [],
+        'max_vals': [],
+        'mean_vals': [],
+        'std_vals': [],
+        'l2_norms': [],
+        'num_tokens_per_caption': [],
+        'pairwise_sims': [],
+        'identical_count': 0,
+        'nan_count': 0,
+    }
+
+    for scene_dir in subdirs[:num_samples]:
+        locals_path = scene_dir / "locals_npz"
+        if not locals_path.exists():
+            continue
+
+        caption_files = sorted(locals_path.glob("*.npz"))
+        if not caption_files:
+            continue
+
+        print(f"Scene: {scene_dir.name} ({len(caption_files)} captions)")
+
+        for cap_file in caption_files:
+            try:
+                data = np.load(cap_file)
+                embeddings = data['embeddings']
+
+                all_stats['min_vals'].append(embeddings.min())
+                all_stats['max_vals'].append(embeddings.max())
+                all_stats['mean_vals'].append(embeddings.mean())
+                all_stats['std_vals'].append(embeddings.std())
+                all_stats['num_tokens_per_caption'].append(embeddings.shape[0])
+
+                l2_norms = np.linalg.norm(embeddings, axis=1)
+                all_stats['l2_norms'].extend(l2_norms.tolist())
+
+                if np.isnan(embeddings).any():
+                    all_stats['nan_count'] += 1
+
+                if embeddings.shape[0] > 1:
+                    pairwise_diff = np.abs(embeddings[:-1] - embeddings[1:]).max()
+                    if pairwise_diff < 1e-6:
+                        all_stats['identical_count'] += 1
+
+                    for i in range(len(embeddings) - 1):
+                        v1 = embeddings[i]
+                        v2 = embeddings[i + 1]
+                        cos_sim = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-8)
+                        all_stats['pairwise_sims'].append(cos_sim)
+
+            except Exception as e:
+                pass
+
+    return all_stats
+
+
 def analyze_local_embeddings(parent_dir, num_samples=20):
     """Deep analysis of local token embeddings."""
     print("="*80)
     print("LOCAL EMBEDDINGS ANALYSIS")
     print("="*80)
 
-    manifest_path = Path(parent_dir) / "scene_packs_manifest_recovered.csv"
-    if not manifest_path.exists():
-        print(f"ERROR: Manifest not found at {manifest_path}")
-        return
+    # Try multiple manifest filenames
+    manifest_names = [
+        "scene_packs_manifest_recovered.csv",
+        "scene_packs_manifest.csv",
+        "manifest.csv"
+    ]
+
+    manifest_path = None
+    for name in manifest_names:
+        path = Path(parent_dir) / name
+        if path.exists():
+            manifest_path = path
+            break
+
+    if manifest_path is None:
+        print(f"ERROR: No manifest found. Tried:")
+        for name in manifest_names:
+            print(f"  - {Path(parent_dir) / name}")
+        print("\nAttempting direct directory scan...")
+        return analyze_direct(parent_dir, num_samples)
 
     df = pd.read_csv(manifest_path)
+    print(f"Loaded manifest: {manifest_path.name}")
+    print(f"Columns: {list(df.columns)}")
     print(f"Total scenes in manifest: {len(df)}")
+
+    # Detect column name for scene pack directory
+    scene_col = None
+    for col in ['scene_pack', 'scene_id', 'clip_id', 'video_id', 'id']:
+        if col in df.columns:
+            scene_col = col
+            break
+
+    if scene_col is None:
+        print(f"ERROR: Could not find scene identifier column")
+        print(f"Available columns: {list(df.columns)}")
+        return None
+
+    print(f"Using '{scene_col}' as scene identifier\n")
 
     all_stats = {
         'min_vals': [],
@@ -44,7 +141,7 @@ def analyze_local_embeddings(parent_dir, num_samples=20):
     failed_loads = []
 
     for idx, row in df.head(num_samples).iterrows():
-        scene_pack_dir = Path(parent_dir) / row['scene_pack']
+        scene_pack_dir = Path(parent_dir) / str(row[scene_col])
         locals_path = scene_pack_dir / "locals_npz"
 
         if not locals_path.exists():
@@ -56,7 +153,7 @@ def analyze_local_embeddings(parent_dir, num_samples=20):
             failed_loads.append((idx, "No .npz files in locals_npz"))
             continue
 
-        print(f"\nScene {idx}: {row['scene_pack']}")
+        print(f"\nScene {idx}: {row[scene_col]}")
         print(f"  Captions: {len(caption_files)}")
 
         for cap_idx, cap_file in enumerate(caption_files):
@@ -230,14 +327,42 @@ def compare_with_global(parent_dir, num_samples=20):
     print("COMPARISON WITH GLOBAL EMBEDDINGS")
     print("="*80)
 
-    manifest_path = Path(parent_dir) / "scene_packs_manifest_recovered.csv"
+    # Try multiple manifest filenames
+    manifest_names = [
+        "scene_packs_manifest_recovered.csv",
+        "scene_packs_manifest.csv",
+        "manifest.csv"
+    ]
+
+    manifest_path = None
+    for name in manifest_names:
+        path = Path(parent_dir) / name
+        if path.exists():
+            manifest_path = path
+            break
+
+    if manifest_path is None:
+        print("WARNING: No manifest found, skipping comparison")
+        return
+
     df = pd.read_csv(manifest_path)
+
+    # Detect column name
+    scene_col = None
+    for col in ['scene_pack', 'scene_id', 'clip_id', 'video_id', 'id']:
+        if col in df.columns:
+            scene_col = col
+            break
+
+    if scene_col is None:
+        print("WARNING: Could not find scene column, skipping comparison")
+        return
 
     local_norms = []
     global_norms = []
 
     for idx, row in df.head(num_samples).iterrows():
-        scene_pack_dir = Path(parent_dir) / row['scene_pack']
+        scene_pack_dir = Path(parent_dir) / str(row[scene_col])
 
         # Load global
         global_path = scene_pack_dir / "global_vec.npy"

@@ -14,25 +14,124 @@ from collections import defaultdict
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+def check_embeddings_direct(parent_dir, num_samples=10):
+    """Check embeddings by directly scanning directories (no manifest)."""
+    print("Scanning directories directly...")
+
+    parent_path = Path(parent_dir)
+    subdirs = [d for d in parent_path.iterdir() if d.is_dir()]
+    print(f"Found {len(subdirs)} subdirectories")
+
+    issues = []
+    stats = defaultdict(list)
+    successful_loads = 0
+
+    for idx, scene_dir in enumerate(subdirs[:num_samples]):
+        locals_path = scene_dir / "locals_npz"
+
+        if not locals_path.exists():
+            issues.append(f"{scene_dir.name}: No locals_npz directory")
+            continue
+
+        caption_files = list(locals_path.glob("*.npz"))
+        if not caption_files:
+            issues.append(f"{scene_dir.name}: No .npz files found")
+            continue
+
+        print(f"\nScene: {scene_dir.name}")
+        print(f"  Found {len(caption_files)} caption files")
+
+        for cap_file in caption_files[:3]:
+            try:
+                data = np.load(cap_file)
+                embeddings = data['embeddings']
+
+                print(f"  Caption: {cap_file.name}")
+                print(f"    Shape: {embeddings.shape}")
+                print(f"    Min: {embeddings.min():.4f}, Max: {embeddings.max():.4f}")
+
+                if np.isnan(embeddings).any():
+                    issues.append(f"{scene_dir.name}/{cap_file.name}: Contains NaN!")
+                    print(f"    ⚠️  WARNING: Contains NaN!")
+
+                if embeddings.shape[0] > 1:
+                    pairwise_diffs = np.abs(embeddings[:-1] - embeddings[1:]).max()
+                    if pairwise_diffs < 1e-6:
+                        issues.append(f"{scene_dir.name}/{cap_file.name}: Identical embeddings!")
+                        print(f"    ⚠️  WARNING: All embeddings identical!")
+
+                stats['min'].append(embeddings.min())
+                stats['max'].append(embeddings.max())
+                stats['mean'].append(embeddings.mean())
+                stats['std'].append(embeddings.std())
+
+                successful_loads += 1
+            except Exception as e:
+                issues.append(f"{scene_dir.name}/{cap_file.name}: Error - {e}")
+
+    print(f"\nProcessed {successful_loads} caption files")
+
+    if issues:
+        print("\n⚠️  Issues found:")
+        for issue in issues[:20]:
+            print(f"  - {issue}")
+        return False
+    else:
+        print("\n✅ No issues found")
+        return True
+
+
 def check_embeddings_integrity(parent_dir, num_samples=10):
     """Check if local embeddings contain NaN/Inf or are all identical."""
     print("="*80)
     print("1. CHECKING LOCAL EMBEDDINGS INTEGRITY")
     print("="*80)
 
-    manifest_path = Path(parent_dir) / "scene_packs_manifest_recovered.csv"
-    if not manifest_path.exists():
-        print(f"ERROR: Manifest not found at {manifest_path}")
-        return False
+    # Try multiple manifest filenames
+    manifest_names = [
+        "scene_packs_manifest_recovered.csv",
+        "scene_packs_manifest.csv",
+        "manifest.csv"
+    ]
+
+    manifest_path = None
+    for name in manifest_names:
+        path = Path(parent_dir) / name
+        if path.exists():
+            manifest_path = path
+            break
+
+    if manifest_path is None:
+        print(f"ERROR: No manifest found. Tried:")
+        for name in manifest_names:
+            print(f"  - {Path(parent_dir) / name}")
+        print("\nAttempting direct directory scan...")
+        return check_embeddings_direct(parent_dir, num_samples)
 
     df = pd.read_csv(manifest_path)
-    print(f"Loaded manifest with {len(df)} entries")
+    print(f"Loaded manifest: {manifest_path.name}")
+    print(f"Columns: {list(df.columns)}")
+    print(f"Total entries: {len(df)}")
+
+    # Detect column name for scene pack directory
+    scene_col = None
+    for col in ['scene_pack', 'scene_id', 'clip_id', 'video_id', 'id']:
+        if col in df.columns:
+            scene_col = col
+            break
+
+    if scene_col is None:
+        print(f"ERROR: Could not find scene identifier column")
+        print(f"Available columns: {list(df.columns)}")
+        return False
+
+    print(f"Using '{scene_col}' as scene identifier\n")
 
     issues = []
     stats = defaultdict(list)
 
     for idx, row in df.head(num_samples).iterrows():
-        scene_pack_dir = Path(parent_dir) / row['scene_pack']
+        scene_pack_dir = Path(parent_dir) / str(row[scene_col])
         locals_path = scene_pack_dir / "locals_npz"
 
         if not locals_path.exists():
@@ -45,7 +144,7 @@ def check_embeddings_integrity(parent_dir, num_samples=10):
             issues.append(f"Row {idx}: No .npz files found in {locals_path}")
             continue
 
-        print(f"\nSample {idx} - Scene: {row['scene_pack']}")
+        print(f"\nSample {idx} - Scene: {row[scene_col]}")
         print(f"  Found {len(caption_files)} caption files")
 
         for cap_file in caption_files[:3]:  # Check first 3 captions
@@ -116,13 +215,41 @@ def check_global_embeddings(parent_dir, num_samples=10):
     print("2. CHECKING GLOBAL EMBEDDINGS (for comparison)")
     print("="*80)
 
-    manifest_path = Path(parent_dir) / "scene_packs_manifest_recovered.csv"
+    # Try multiple manifest filenames
+    manifest_names = [
+        "scene_packs_manifest_recovered.csv",
+        "scene_packs_manifest.csv",
+        "manifest.csv"
+    ]
+
+    manifest_path = None
+    for name in manifest_names:
+        path = Path(parent_dir) / name
+        if path.exists():
+            manifest_path = path
+            break
+
+    if manifest_path is None:
+        print(f"WARNING: No manifest found, skipping global check")
+        return True
+
     df = pd.read_csv(manifest_path)
+
+    # Detect column name
+    scene_col = None
+    for col in ['scene_pack', 'scene_id', 'clip_id', 'video_id', 'id']:
+        if col in df.columns:
+            scene_col = col
+            break
+
+    if scene_col is None:
+        print(f"WARNING: Could not find scene column")
+        return True
 
     issues = []
 
     for idx, row in df.head(num_samples).iterrows():
-        scene_pack_dir = Path(parent_dir) / row['scene_pack']
+        scene_pack_dir = Path(parent_dir) / str(row[scene_col])
         global_path = scene_pack_dir / "global_vec.npy"
 
         if not global_path.exists():
@@ -131,7 +258,7 @@ def check_global_embeddings(parent_dir, num_samples=10):
 
         try:
             global_emb = np.load(global_path)
-            print(f"\nSample {idx} - Scene: {row['scene_pack']}")
+            print(f"\nSample {idx} - Scene: {row[scene_col]}")
             print(f"  Shape: {global_emb.shape}")
             print(f"  Min: {global_emb.min():.4f}, Max: {global_emb.max():.4f}")
             print(f"  Mean: {global_emb.mean():.4f}, Std: {global_emb.std():.4f}")
