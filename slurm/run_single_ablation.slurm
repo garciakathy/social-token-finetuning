@@ -34,8 +34,8 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # --- Paths (EDIT) ---
-PARENT_DIR="/home/kgarci18/data_lisik3/kgarci18/ooo/train/social_tokens"   # contains scene_packs_manifest_recovered.csv
-OUT_DIR="/home/kgarci18/data_lisik3/kgarci18/seamless/outputs/nextutt_runs/run_ablation_both"
+PARENT_DIR="$HOME/data/seamless/outputs/social_tokens_fixed"   # contains social_packs_manifest.csv
+OUT_DIR="$HOME/data/seamless/outputs/nextutt_runs/run_ablation_both"
 DINO_CKPT="/home/kgarci18/data_lisik3/kgarci18/seamless/outputs/dino_run_20250816_134333/best_dino_vit_base_patch14_dinov2.pt"
 
 LM_NAME="google/gemma-2-2b-it"
