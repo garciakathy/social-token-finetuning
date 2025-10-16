@@ -953,7 +953,20 @@ def train_and_eval(
     if rank == 0: print(f"[DDP] is_dist={is_dist} world={world} device={device}")
     set_all_seeds(seed + rank)
 
-    manifest_csv = os.path.join(parent_dir, "scene_packs_manifest_recovered.csv")
+    # Try multiple manifest filenames (prefer newer format)
+    manifest_candidates = [
+        "social_packs_manifest.csv",
+        "scene_packs_manifest_recovered.csv",
+        "scene_packs_manifest.csv"
+    ]
+    manifest_csv = None
+    for candidate in manifest_candidates:
+        candidate_path = os.path.join(parent_dir, candidate)
+        if os.path.exists(candidate_path):
+            manifest_csv = candidate_path
+            break
+    if manifest_csv is None:
+        raise FileNotFoundError(f"No manifest found in {parent_dir}. Tried: {manifest_candidates}")
     if rank == 0 and not os.path.exists(manifest_csv):
         raise FileNotFoundError(f"Missing manifest CSV at {manifest_csv}")
 
@@ -991,7 +1004,6 @@ def train_and_eval(
 
     # Build splits & JSONL on rank0
     if rank == 0:
-        manifest_csv = os.path.join(parent_dir, "scene_packs_manifest_recovered.csv")
         df_all = pd.read_csv(manifest_csv)
 
         normalize_cols = ["global_vec","locals_npz","meta_pkl","frames_dir","frames_path","frames_root"]
@@ -1480,7 +1492,6 @@ def main():
 
     print(f"[whoami] __file__={__file__}")
     print(f"[whoami] parent_dir={args.parent_dir}")
-    print(f"[whoami] manifest={os.path.join(args.parent_dir,'scene_packs_manifest_recovered.csv')}")
     print(f"[whoami] caption_nextword={getattr(args, 'caption_nextword', False)} col_transcript={args.col_transcript!r}")
 
     train_and_eval(

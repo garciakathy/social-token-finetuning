@@ -20,9 +20,9 @@ export HF_HUB_DISABLE_SYMLINKS_WARNING=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export CUDA_VISIBLE_DEVICES=0  # Use only GPU 0
 
-# --- Paths (EDIT THESE!) ---
-PARENT_DIR="/home/kgarci18/data_lisik3/kgarci18/ooo/train/social_tokens"
-OUT_DIR="/home/kgarci18/data_lisik3/kgarci18/seamless/outputs/test_single_gpu"
+# --- Paths ---
+PARENT_DIR="$HOME/data/seamless/outputs/social_tokens_fixed"
+OUT_DIR="$HOME/data/seamless/outputs/test_single_gpu"
 DINO_CKPT="/home/kgarci18/data_lisik3/kgarci18/seamless/outputs/dino_run_20250816_134333/best_dino_vit_base_patch14_dinov2.pt"
 TRAIN_IDS="/home/kgarci18/data_lisik3/kgarci18/ooo/train_ids.txt"
 TEST_IDS="/home/kgarci18/data_lisik3/kgarci18/ooo/test_ids.txt"

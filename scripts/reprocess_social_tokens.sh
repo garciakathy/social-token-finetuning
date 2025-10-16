@@ -39,8 +39,7 @@ FRAMES_ROOT="/home/kgarci18/data_lisik3/kgarci18/ooo/train/frames"
 CAPTIONS_CSV="/home/kgarci18/code/social-token-finetuning/data/captions.csv"
 
 # Output: Where to save the corrected social tokens
-# Using a NEW directory to avoid overwriting during testing
-OUT_DIR="/home/kgarci18/data_lisik3/kgarci18/ooo/train/social_tokens_fixed"
+OUT_DIR="$HOME/data/seamless/outputs/social_tokens_fixed"
 
 # DINO checkpoint: Fine-tuned DINO model (from your training)
 DINO_CKPT="/home/kgarci18/data_lisik3/kgarci18/seamless/outputs/dino_run_20250816_134333/best_dino_vit_base_patch14_dinov2.pt"
