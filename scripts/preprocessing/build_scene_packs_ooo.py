@@ -249,11 +249,9 @@ def local_vectors_from_caption(frames_dir: str, caption: str, preprocess, cls_em
         # Map the k-th kept token (rank order) to a frame index
         # position = (rank + 0.5) / M in [0,1] -> frame idx in [0, N-1]
         f_center = int(round((rank + 0.5) / M * (N - 1)))
-        s = max(0, f_center - pad_frames)
-        e = min(N - 1, f_center + pad_frames)
-        if e < s: 
-            continue
-        vec = frame_embs[s:e+1].mean(0)
+
+        # Use single frame instead of window average for better diversity
+        vec = frame_embs[f_center]
         locals_list.append({"ti": int(k), "token": tokens[k], "vec": vec})
 
     return locals_list, tokens
