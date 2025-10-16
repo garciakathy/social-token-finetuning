@@ -128,7 +128,17 @@ def load_dino(checkpoint_path: str, model_name: str, device: torch.device):
 
     sd = torch.load(checkpoint_path, map_location="cpu")
     if isinstance(sd, dict) and "student_backbone" in sd:
-        model_backbone.load_state_dict(sd["student_backbone"], strict=False)
+        # DINO training wraps backbone in DinoBackbone class, so keys have "backbone." prefix
+        # We need to strip this prefix to match the plain timm model
+        state = sd["student_backbone"]
+        cleaned = {k.replace("backbone.", "", 1): v for k, v in state.items()}
+        incompatible = model_backbone.load_state_dict(cleaned, strict=False)
+        if incompatible.missing_keys or incompatible.unexpected_keys:
+            print(f"WARNING: Checkpoint loading issues:")
+            print(f"  Missing keys: {len(incompatible.missing_keys)}")
+            print(f"  Unexpected keys: {len(incompatible.unexpected_keys)}")
+        else:
+            print(f"✓ Successfully loaded DINO checkpoint with {len(cleaned)} parameters")
     elif isinstance(sd, dict) and "model" in sd:
         model_backbone.load_state_dict(sd["model"], strict=False)
     elif isinstance(sd, dict) and "state_dict" in sd:

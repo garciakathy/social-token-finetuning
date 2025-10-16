@@ -36,8 +36,7 @@ export CUDA_VISIBLE_DEVICES=0  # Use GPU 0
 FRAMES_ROOT="/home/kgarci18/data_lisik3/kgarci18/ooo/train/frames"
 
 # Input: CSV with columns 'video_name' and 'caption'
-# TODO: UPDATE THIS PATH! This CSV should contain video names and their captions
-CAPTIONS_CSV="/home/kgarci18/data_lisik3/kgarci18/ooo/train/captions.csv"  # ⚠️ VERIFY THIS PATH
+CAPTIONS_CSV="/home/kgarci18/code/social-token-finetuning/data/captions.csv"
 
 # Output: Where to save the corrected social tokens
 # Using a NEW directory to avoid overwriting during testing
@@ -54,7 +53,8 @@ PAD_FRAMES=2           # +/- frames around each token mapping
 BATCH_SIZE=64          # Batch size for embedding
 
 # Optional: Limit number of videos for testing (0 = process all)
-LIMIT=0  # Set to 5-10 for quick test, 0 for full dataset
+# IMPORTANT: Start with LIMIT=5 to test, then set to 0 for full dataset
+LIMIT=5  # ⚠️ Set to 5-10 for quick test, 0 for full dataset
 
 # --- Validation ---
 echo "Validating paths..."
