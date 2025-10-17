@@ -845,11 +845,12 @@ def main():
             sim_flat = sim_rsm[:n, :n][tri]
 
             results = []
+            best_layer_uid = None
+            best_rho = -np.inf
+            best_features = None
+
             for layer_uid, X in features_by_uid.items():
                 Xn = X[:n]
-                out_npz = os.path.join(SAVE_FEATURES_DIR, f"{layer_uid.replace('/', '_')}.npz")
-                np.savez(out_npz, X=Xn, uids=np.array(uid_order[:n], dtype=object))
-                _log(f"[SAVE] {out_npz}  shape={Xn.shape}")
 
                 rsm = 1 - pairwise_distances(Xn, metric='correlation')
                 model_flat = rsm[tri]
@@ -857,10 +858,22 @@ def main():
                 results.append({"layer_uid": layer_uid, "spearman": float(rho), "p": float(p)})
                 _log(f"[RSA] {layer_uid}: r={rho:.4f}, p={p:.2e}")
 
+                # Track best layer for saving
+                if rho > best_rho:
+                    best_rho = rho
+                    best_layer_uid = layer_uid
+                    best_features = Xn
+
         df_res = pd.DataFrame(results)
         if len(df_res):
             best = df_res.loc[df_res['spearman'].idxmax()]
             _log(f"[FINISHED] Best layer: {best['layer_uid']}  r={best['spearman']:.4f}  p={best['p']:.2e}")
+
+            # Save only the best layer's features
+            if best_features is not None:
+                out_npz = os.path.join(SAVE_FEATURES_DIR, f"{INJECT_MODE}_{POOL_MODE}_{best_layer_uid.replace('/', '_')}_best.npz")
+                np.savez(out_npz, X=best_features, uids=np.array(uid_order[:n], dtype=object))
+                _log(f"[SAVE] Best layer features saved to: {out_npz}  shape={best_features.shape}")
         else:
             _log("[FINISHED] No results computed.", level="warning")
         df_res.to_csv(RESULTS_CSV, index=False)
