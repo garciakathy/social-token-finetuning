@@ -1314,14 +1314,22 @@ def train_and_eval(
 
                                     if has_issues:
                                         # Projector is producing NaN - use zero embeddings as fallback
-                                        if rank == 0 and step < 5:
+                                        if rank == 0 and step <= 5:
                                             print(f"[WARN step={step}] Projector produces NaN for batch {b}, using zero fallback")
-                                        H = next(projector.parameters()).size(-1) if hasattr(next(projector.parameters()), 'size') else 2304
-                                        proj_l_list[b] = torch.zeros(l.size(0), H, device=device, dtype=l.dtype, requires_grad=True)
+                                        # Get correct output dimension from LLM config
+                                        H = gemma.lm.config.hidden_size
+                                        # Match the projector's output dtype (float32 since projector is in float32)
+                                        zero_emb = torch.zeros(l.size(0), H, device=device, dtype=torch.float32)
+                                        # Make it a parameter so it has requires_grad=True
+                                        proj_l_list[b] = nn.Parameter(zero_emb, requires_grad=True).to(device)
+                                        if rank == 0 and step <= 2:
+                                            print(f"[DEBUG] Batch {b}: Created zero fallback with shape {proj_l_list[b].shape}")
                                     else:
                                         proj_l = projector(l)
                                         proj_l_list[b] = proj_l
                                         l_has_total += 1
+                                        if rank == 0 and step <= 2:
+                                            print(f"[DEBUG] Batch {b}: Projector output shape {proj_l.shape}")
 
             out = gemma(
                 input_ids=input_ids, attention_mask=attention_mask, labels=labels,
