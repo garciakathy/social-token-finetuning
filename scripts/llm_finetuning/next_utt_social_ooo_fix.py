@@ -281,6 +281,12 @@ class GemmaWithInjection(nn.Module):
                 if pos_g.numel() > 0:
                     b = pos_g[:, 0]; t = pos_g[:, 1]
                     emb[b, t, :] = proj_global[b, :].to(dtype=dtype)
+            elif ablation_mode == "local_only":
+                # In local_only mode, zero out <SOC_G> to avoid NaN from uninitialized embeddings
+                pos_g = (input_ids == self.id_soc_g).nonzero(as_tuple=False)
+                if pos_g.numel() > 0:
+                    b = pos_g[:, 0]; t = pos_g[:, 1]
+                    emb[b, t, :] = torch.zeros_like(emb[b, t, :])
             # Local token injection
             if ablation_mode in ("both", "local_only") and proj_locals is not None:
                 B = input_ids.size(0)
@@ -289,6 +295,13 @@ class GemmaWithInjection(nn.Module):
                     if lpos.numel() > 0 and proj_locals[b] is not None:
                         L = min(lpos.numel(), proj_locals[b].size(0))
                         emb[b, lpos[:L], :] = proj_locals[b][:L, :].to(dtype=dtype)
+            elif ablation_mode == "global_only":
+                # In global_only mode, zero out <SOC_L> to avoid NaN from uninitialized embeddings
+                B = input_ids.size(0)
+                for b in range(B):
+                    lpos = (input_ids[b] == self.id_soc_l).nonzero(as_tuple=False).squeeze(-1)
+                    if lpos.numel() > 0:
+                        emb[b, lpos, :] = torch.zeros_like(emb[b, lpos, :])
         out = self.lm(inputs_embeds=emb, attention_mask=attention_mask, labels=labels)
         return out
 
