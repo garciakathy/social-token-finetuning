@@ -1196,99 +1196,109 @@ def train_and_eval(
 
             if inject_visuals:
                 if visual_mode == "frames":
-                    # global
-                    flat_g_imgs, g_owner = [], []
-                    for b in range(B):
-                        paths = batch["global_frames"][b] or []
-                        for pth in paths:
-                            im = img_cache.get(pth)
-                            if im is not None:
-                                flat_g_imgs.append(im); g_owner.append(b)
-                    g_has = set()
-                    if flat_g_imgs:
-                        g_cls_all = dino_encode_images_in_chunks(dino, flat_g_imgs, chunk=dino_local_batch)
-                        g_cls_all = to_pdtype(g_cls_all, projector)
-                        sum_g = torch.zeros(B, 768, device=device, dtype=g_cls_all.dtype)
-                        cnt_g = torch.zeros(B,   1, device=device, dtype=g_cls_all.dtype)
-                        for i, b in enumerate(g_owner):
-                            sum_g[b] += g_cls_all[i]; cnt_g[b] += 1; g_has.add(b)
-                        mean_g = sum_g / torch.clamp(cnt_g, min=1.0)
-                        proj_g = projector(mean_g)
+                    # global - skip in local_only mode
+                    if ablation_mode != "local_only":
+                        flat_g_imgs, g_owner = [], []
+                        for b in range(B):
+                            paths = batch["global_frames"][b] or []
+                            for pth in paths:
+                                im = img_cache.get(pth)
+                                if im is not None:
+                                    flat_g_imgs.append(im); g_owner.append(b)
+                        g_has = set()
+                        if flat_g_imgs:
+                            g_cls_all = dino_encode_images_in_chunks(dino, flat_g_imgs, chunk=dino_local_batch)
+                            g_cls_all = to_pdtype(g_cls_all, projector)
+                            sum_g = torch.zeros(B, 768, device=device, dtype=g_cls_all.dtype)
+                            cnt_g = torch.zeros(B,   1, device=device, dtype=g_cls_all.dtype)
+                            for i, b in enumerate(g_owner):
+                                sum_g[b] += g_cls_all[i]; cnt_g[b] += 1; g_has.add(b)
+                            mean_g = sum_g / torch.clamp(cnt_g, min=1.0)
+                            proj_g = projector(mean_g)
+                        else:
+                            proj_g = projector(torch.zeros(B, 768, device=device, dtype=next(projector.parameters()).dtype))
+                        g_has_total += len(g_has)
                     else:
-                        proj_g = projector(torch.zeros(B, 768, device=device, dtype=next(projector.parameters()).dtype))
-                    g_has_total += len(g_has)
+                        proj_g = None
 
-                    # locals
-                    flat_l_imgs, l_owner = [], []
-                    for b in range(B):
-                        lpaths = batch["local_frames"][b] or []
-                        had = 0
-                        for pth in lpaths:
-                            im = img_cache.get(pth)
-                            if im is not None:
-                                flat_l_imgs.append(im); l_owner.append(b); had += 1
-                        if had > 0: l_has_total += 1
-                    if flat_l_imgs:
-                        l_cls_all = dino_encode_images_in_chunks(dino, flat_l_imgs, chunk=dino_local_batch)
-                        l_cls_all = to_pdtype(l_cls_all, projector)
-                        per_b = {}
-                        for i, b in enumerate(l_owner):
-                            per_b.setdefault(b, []).append(l_cls_all[i])
-                        for b, vecs in per_b.items():
-                            l_cls = torch.stack(vecs, dim=0)
-                            proj_l_list[b] = projector(l_cls)
+                    # locals - skip in global_only mode
+                    if ablation_mode != "global_only":
+                        flat_l_imgs, l_owner = [], []
+                        for b in range(B):
+                            lpaths = batch["local_frames"][b] or []
+                            had = 0
+                            for pth in lpaths:
+                                im = img_cache.get(pth)
+                                if im is not None:
+                                    flat_l_imgs.append(im); l_owner.append(b); had += 1
+                            if had > 0: l_has_total += 1
+                        if flat_l_imgs:
+                            l_cls_all = dino_encode_images_in_chunks(dino, flat_l_imgs, chunk=dino_local_batch)
+                            l_cls_all = to_pdtype(l_cls_all, projector)
+                            per_b = {}
+                            for i, b in enumerate(l_owner):
+                                per_b.setdefault(b, []).append(l_cls_all[i])
+                            for b, vecs in per_b.items():
+                                l_cls = torch.stack(vecs, dim=0)
+                                proj_l_list[b] = projector(l_cls)
                 else:
                     # vectors
-                    g_vecs = []
-                    g_has_step = 0
-                    for pth in batch["global_vecs"]:
-                        if pth and os.path.exists(pth):
-                            g = np.load(pth).astype(np.float32); g_has_step += 1
-                        else:
-                            g = np.zeros((768,), dtype=np.float32)
-                        g_vecs.append(torch.from_numpy(g))
-                    g_has_total += g_has_step
-                    g_cls = torch.stack(g_vecs, dim=0)
-                    g_cls = to_pdtype(g_cls, projector)
-                    proj_g = projector(g_cls)
-
-                    order_modes = batch.get("locals_order_mode", [False]*B)
-
-                    for b in range(B):
-                        npz_path = batch["locals_npzs"][b]
-                        word_ids = batch.get("loc_word_ids", [[]])[b] if isinstance(batch.get("loc_word_ids", None), list) else []
-                        order_mode = bool(order_modes[b] if isinstance(order_modes, list) else order_modes)
-
-                        if npz_path and os.path.exists(npz_path) and word_ids:
-                            arr = np.load(npz_path, allow_pickle=True)
-                            vecs = []
-                            if order_mode:
-                                pos2key = _npz_build_pos2key(arr)
-                                for pos in word_ids[:max_locals]:
-                                    k = pos2key.get(int(pos))
-                                    if k is not None:
-                                        v = arr[k]
-                                        vecs.append(torch.from_numpy(v.astype(np.float32)))
+                    # Skip computing global projections in local_only mode to avoid NaN
+                    if ablation_mode != "local_only":
+                        g_vecs = []
+                        g_has_step = 0
+                        for pth in batch["global_vecs"]:
+                            if pth and os.path.exists(pth):
+                                g = np.load(pth).astype(np.float32); g_has_step += 1
                             else:
-                                for wid in word_ids[:max_locals]:
-                                    if wid in arr: v = arr[wid]
-                                    elif str(wid) in arr: v = arr[str(wid)]
-                                    else:
-                                        v = None
-                                        for pat in (f"w_{wid}", f"idx_{wid}", f"word_{wid}", f"{wid:05d}"):
-                                            if pat in arr: v = arr[pat]; break
-                                        if v is None:
-                                            # final fallback: digits in keys
-                                            pos2key = _npz_build_pos2key(arr)
-                                            k = pos2key.get(int(wid))
-                                            if k is not None:
-                                                v = arr[k]
-                                    if v is not None:
-                                        vecs.append(torch.from_numpy(v.astype(np.float32)))
-                            if vecs:
-                                l = torch.stack(vecs, dim=0)
-                                l = to_pdtype(l, projector)
-                                proj_l_list[b] = projector(l); l_has_total += 1
+                                g = np.zeros((768,), dtype=np.float32)
+                            g_vecs.append(torch.from_numpy(g))
+                        g_has_total += g_has_step
+                        g_cls = torch.stack(g_vecs, dim=0)
+                        g_cls = to_pdtype(g_cls, projector)
+                        proj_g = projector(g_cls)
+                    else:
+                        proj_g = None
+
+                    # Skip computing local projections in global_only mode to avoid NaN
+                    if ablation_mode != "global_only":
+                        order_modes = batch.get("locals_order_mode", [False]*B)
+
+                        for b in range(B):
+                            npz_path = batch["locals_npzs"][b]
+                            word_ids = batch.get("loc_word_ids", [[]])[b] if isinstance(batch.get("loc_word_ids", None), list) else []
+                            order_mode = bool(order_modes[b] if isinstance(order_modes, list) else order_modes)
+
+                            if npz_path and os.path.exists(npz_path) and word_ids:
+                                arr = np.load(npz_path, allow_pickle=True)
+                                vecs = []
+                                if order_mode:
+                                    pos2key = _npz_build_pos2key(arr)
+                                    for pos in word_ids[:max_locals]:
+                                        k = pos2key.get(int(pos))
+                                        if k is not None:
+                                            v = arr[k]
+                                            vecs.append(torch.from_numpy(v.astype(np.float32)))
+                                else:
+                                    for wid in word_ids[:max_locals]:
+                                        if wid in arr: v = arr[wid]
+                                        elif str(wid) in arr: v = arr[str(wid)]
+                                        else:
+                                            v = None
+                                            for pat in (f"w_{wid}", f"idx_{wid}", f"word_{wid}", f"{wid:05d}"):
+                                                if pat in arr: v = arr[pat]; break
+                                            if v is None:
+                                                # final fallback: digits in keys
+                                                pos2key = _npz_build_pos2key(arr)
+                                                k = pos2key.get(int(wid))
+                                                if k is not None:
+                                                    v = arr[k]
+                                        if v is not None:
+                                            vecs.append(torch.from_numpy(v.astype(np.float32)))
+                                if vecs:
+                                    l = torch.stack(vecs, dim=0)
+                                    l = to_pdtype(l, projector)
+                                    proj_l_list[b] = projector(l); l_has_total += 1
 
             out = gemma(
                 input_ids=input_ids, attention_mask=attention_mask, labels=labels,
