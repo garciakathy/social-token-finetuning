@@ -1303,7 +1303,17 @@ def train_and_eval(
                                             print(f"[ERROR] NaN/Inf detected in local embeddings for batch {b}, skipping")
                                         continue
                                     l = to_pdtype(l, projector)
+
+                                    # Debug: print stats before projection
+                                    if rank == 0 and step == 0 and b < 4:
+                                        print(f"[DEBUG] Batch {b}: input shape={l.shape}, mean={l.mean().item():.6f}, std={l.std().item():.6f}, min={l.min().item():.6f}, max={l.max().item():.6f}")
+
                                     proj_l = projector(l)
+
+                                    # Debug: print stats after projection
+                                    if rank == 0 and step == 0 and b < 4:
+                                        print(f"[DEBUG] Batch {b}: output shape={proj_l.shape}, mean={proj_l.mean().item() if not torch.isnan(proj_l).any() else 'NaN'}, has_nan={torch.isnan(proj_l).any()}, has_inf={torch.isinf(proj_l).any()}")
+
                                     # Check for NaN/Inf in projector output
                                     if torch.isnan(proj_l).any() or torch.isinf(proj_l).any():
                                         if rank == 0:
