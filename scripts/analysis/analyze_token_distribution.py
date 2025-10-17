@@ -45,9 +45,24 @@ def analyze_token_distribution(parent_dir, col_transcript="caption", max_samples
     manifest = load_manifest(parent_dir)
     print(f"Loaded {len(manifest)} clips from manifest")
 
-    # Filter to successful clips
-    manifest = manifest[manifest['status'] == 'success'].copy()
-    print(f"Filtered to {len(manifest)} successful clips")
+    # Check what status values exist
+    if 'status' in manifest.columns:
+        print(f"\nStatus value counts:")
+        print(manifest['status'].value_counts())
+
+        # Filter to successful clips only if status column exists and has 'success' values
+        if 'success' in manifest['status'].values:
+            manifest = manifest[manifest['status'] == 'success'].copy()
+            print(f"Filtered to {len(manifest)} clips with status='success'")
+        else:
+            print("Warning: No clips with status='success', using all clips")
+    else:
+        print("No 'status' column found, using all clips")
+
+    if len(manifest) == 0:
+        print("\nERROR: No clips to analyze after filtering!")
+        print("Check your manifest file and ensure clips were processed successfully.")
+        sys.exit(1)
 
     if max_samples:
         manifest = manifest.head(max_samples)
@@ -83,7 +98,8 @@ def analyze_token_distribution(parent_dir, col_transcript="caption", max_samples
             with open(meta_pkl, 'rb') as f:
                 meta = pickle.load(f)
         except Exception as e:
-            print(f"Warning: Could not load {meta_pkl}: {e}")
+            if stats['total_sequences'] < 5:  # Only print first few errors
+                print(f"Warning: Could not load {meta_pkl}: {e}")
             continue
 
         # Get caption
@@ -134,7 +150,16 @@ def analyze_token_distribution(parent_dir, col_transcript="caption", max_samples
         if (idx + 1) % 100 == 0:
             print(f"  Processed {idx + 1}/{len(manifest)} sequences...")
 
-    print(f"Analysis complete!")
+    print(f"Analysis complete! Analyzed {stats['total_sequences']} sequences.")
+
+    if stats['total_sequences'] == 0:
+        print("\nERROR: No valid sequences found!")
+        print("Possible issues:")
+        print("  - meta_pkl files don't exist")
+        print("  - meta_pkl files are corrupted")
+        print("  - Caption column name is wrong")
+        sys.exit(1)
+
     return stats
 
 
