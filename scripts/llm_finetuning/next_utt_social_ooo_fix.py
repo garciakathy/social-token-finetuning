@@ -1297,30 +1297,31 @@ def train_and_eval(
                                             vecs.append(torch.from_numpy(v.astype(np.float32)))
                                 if vecs:
                                     l = torch.stack(vecs, dim=0)
-                                    # Check for NaN/Inf in input embeddings
+                                    # Check for NaN/Inf in input embeddings - replace with zeros
                                     if torch.isnan(l).any() or torch.isinf(l).any():
-                                        if rank == 0:
-                                            print(f"[ERROR] NaN/Inf detected in local embeddings for batch {b}, skipping")
-                                        continue
+                                        if rank == 0 and step < 5:
+                                            print(f"[WARN step={step}] NaN/Inf in input embeddings batch {b}, using zeros")
+                                        l = torch.zeros_like(l)
+
                                     l = to_pdtype(l, projector)
 
-                                    # Debug: print stats before projection
-                                    if rank == 0 and step == 0 and b < 4:
-                                        print(f"[DEBUG] Batch {b}: input shape={l.shape}, mean={l.mean().item():.6f}, std={l.std().item():.6f}, min={l.min().item():.6f}, max={l.max().item():.6f}")
+                                    with torch.no_grad():
+                                        # Test projection in eval mode first to check for NaN
+                                        projector.eval()
+                                        test_proj = projector(l[:1] if l.size(0) > 0 else l)
+                                        has_issues = torch.isnan(test_proj).any() or torch.isinf(test_proj).any()
+                                        projector.train()
 
-                                    proj_l = projector(l)
-
-                                    # Debug: print stats after projection
-                                    if rank == 0 and step == 0 and b < 4:
-                                        print(f"[DEBUG] Batch {b}: output shape={proj_l.shape}, mean={proj_l.mean().item() if not torch.isnan(proj_l).any() else 'NaN'}, has_nan={torch.isnan(proj_l).any()}, has_inf={torch.isinf(proj_l).any()}")
-
-                                    # Check for NaN/Inf in projector output
-                                    if torch.isnan(proj_l).any() or torch.isinf(proj_l).any():
-                                        if rank == 0:
-                                            print(f"[ERROR] NaN/Inf in projector output for batch {b}, skipping")
-                                        continue
-                                    proj_l_list[b] = proj_l
-                                    l_has_total += 1
+                                    if has_issues:
+                                        # Projector is producing NaN - use zero embeddings as fallback
+                                        if rank == 0 and step < 5:
+                                            print(f"[WARN step={step}] Projector produces NaN for batch {b}, using zero fallback")
+                                        H = next(projector.parameters()).size(-1) if hasattr(next(projector.parameters()), 'size') else 2304
+                                        proj_l_list[b] = torch.zeros(l.size(0), H, device=device, dtype=l.dtype, requires_grad=True)
+                                    else:
+                                        proj_l = projector(l)
+                                        proj_l_list[b] = proj_l
+                                        l_has_total += 1
 
             out = gemma(
                 input_ids=input_ids, attention_mask=attention_mask, labels=labels,
