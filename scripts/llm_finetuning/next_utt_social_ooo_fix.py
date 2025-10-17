@@ -1297,8 +1297,20 @@ def train_and_eval(
                                             vecs.append(torch.from_numpy(v.astype(np.float32)))
                                 if vecs:
                                     l = torch.stack(vecs, dim=0)
+                                    # Check for NaN/Inf in input embeddings
+                                    if torch.isnan(l).any() or torch.isinf(l).any():
+                                        if rank == 0:
+                                            print(f"[ERROR] NaN/Inf detected in local embeddings for batch {b}, skipping")
+                                        continue
                                     l = to_pdtype(l, projector)
-                                    proj_l_list[b] = projector(l); l_has_total += 1
+                                    proj_l = projector(l)
+                                    # Check for NaN/Inf in projector output
+                                    if torch.isnan(proj_l).any() or torch.isinf(proj_l).any():
+                                        if rank == 0:
+                                            print(f"[ERROR] NaN/Inf in projector output for batch {b}, skipping")
+                                        continue
+                                    proj_l_list[b] = proj_l
+                                    l_has_total += 1
 
             out = gemma(
                 input_ids=input_ids, attention_mask=attention_mask, labels=labels,
