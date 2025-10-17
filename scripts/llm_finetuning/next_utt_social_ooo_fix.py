@@ -1331,6 +1331,16 @@ def train_and_eval(
                                         if rank == 0 and step <= 2:
                                             print(f"[DEBUG] Batch {b}: Projector output shape {proj_l.shape}")
 
+            # Debug: Check all batch shapes before passing to model
+            if rank == 0 and step <= 2:
+                print(f"[DEBUG step={step}] Passing to model:")
+                print(f"  proj_g: {proj_g.shape if proj_g is not None else 'None'}")
+                for b in range(B):
+                    if proj_l_list[b] is not None:
+                        print(f"  proj_l_list[{b}]: {proj_l_list[b].shape}, dtype={proj_l_list[b].dtype}")
+                    else:
+                        print(f"  proj_l_list[{b}]: None")
+
             out = gemma(
                 input_ids=input_ids, attention_mask=attention_mask, labels=labels,
                 proj_global=proj_g, proj_locals=proj_l_list, inject_visuals=inject_visuals,
