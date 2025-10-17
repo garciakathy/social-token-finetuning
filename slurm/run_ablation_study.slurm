@@ -72,7 +72,7 @@ mkdir -p "$OUT_DIR"
 torchrun --nproc_per_node=4 "$SCRIPT_PATH" \
   --parent-dir "$PARENT_DIR" \
   --output-dir "$OUT_DIR" \
-  --col-transcript "transcript_json" \
+  --col-transcript "caption" \
   --visual-mode vectors \
   --caption-nextword \
   --train-frac $TRAIN_FRAC \
@@ -109,7 +109,7 @@ mkdir -p "$OUT_DIR"
 torchrun --nproc_per_node=4 "$SCRIPT_PATH" \
   --parent-dir "$PARENT_DIR" \
   --output-dir "$OUT_DIR" \
-  --col-transcript "transcript_json" \
+  --col-transcript "caption" \
   --visual-mode vectors \
   --caption-nextword \
   --train-frac $TRAIN_FRAC \
@@ -146,7 +146,7 @@ mkdir -p "$OUT_DIR"
 torchrun --nproc_per_node=4 "$SCRIPT_PATH" \
   --parent-dir "$PARENT_DIR" \
   --output-dir "$OUT_DIR" \
-  --col-transcript "transcript_json" \
+  --col-transcript "caption" \
   --visual-mode vectors \
   --caption-nextword \
   --train-frac $TRAIN_FRAC \
@@ -186,7 +186,7 @@ mkdir -p "$OUT_DIR"
 torchrun --nproc_per_node=4 "$SCRIPT_PATH" \
   --parent-dir "$PARENT_DIR" \
   --output-dir "$OUT_DIR" \
-  --col-transcript "transcript_json" \
+  --col-transcript "caption" \
   --visual-mode vectors \
   --caption-nextword \
   --train-frac $TRAIN_FRAC \

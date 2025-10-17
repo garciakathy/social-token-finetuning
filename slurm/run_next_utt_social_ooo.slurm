@@ -54,7 +54,7 @@ echo "Starting torchrun @ $(date)"
 torchrun --nproc_per_node=4 next_utt_social_ooo_fix.py \
   --parent-dir "$PARENT_DIR" \
   --output-dir "$OUT_DIR" \
-  --col-transcript "transcript_json" \
+  --col-transcript "caption" \
   --visual-mode vectors \
   --caption-nextword \
   --train-frac 0.8 \

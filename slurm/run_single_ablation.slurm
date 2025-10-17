@@ -82,7 +82,7 @@ torchrun --nproc_per_node=4 \
   /home/kgarci18/kg/code/social-token-finetuning/scripts/llm_finetuning/next_utt_social_ooo_fix.py \
   --parent-dir "$PARENT_DIR" \
   --output-dir "$OUT_DIR" \
-  --col-transcript "transcript_json" \
+  --col-transcript "caption" \
   --visual-mode vectors \
   --caption-nextword \
   --train-frac $TRAIN_FRAC \
