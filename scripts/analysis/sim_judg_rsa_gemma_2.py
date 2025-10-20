@@ -90,7 +90,7 @@ DRYRUN = False
 LOG_INTERVAL = 50
 USE_SRP = True
 
-INJECT_MODE = "full"        # full | global | none
+INJECT_MODE = "full"        # full | global | local | none
 POOL_MODE   = "all"         # all | exclude_soc | only_soc | locals_only | eos
 
 BATCH = 8
@@ -206,6 +206,14 @@ def build_inline(words: List[str], local_idx: List[int], fallback_caption: Optio
         return " ".join(words)
     if INJECT_MODE == "global":
         return f"{SOC_G} " + " ".join(words)
+    if INJECT_MODE == "local":
+        # local only: inject SOC_L after words, but no SOC_G
+        loc = set(i for i in local_idx if 0 <= i < len(words))
+        out = []
+        for i, w in enumerate(words):
+            out.append(w)
+            if i in loc: out.append(SOC_L)
+        return " ".join(out)
     # full injection
     loc = set(i for i in local_idx if 0 <= i < len(words))
     out = [SOC_G]
@@ -489,7 +497,7 @@ class SOCWrapper(nn.Module):
                 embs[is_g] = proj_g[rows_idx].repeat_interleave(repeats, dim=0)
 
         # LOCAL injection
-        if INJECT_MODE == "full" and self.soc_l is not None:
+        if INJECT_MODE in ("full", "local") and self.soc_l is not None:
             B = input_ids.size(0)
             for b in range(B):
                 pos = (input_ids[b] == self.soc_l).nonzero(as_tuple=True)[0]
@@ -512,7 +520,7 @@ class SOCWrapper(nn.Module):
                         _log(f"[INJECT-DBG b{b}] <SOC_G> positions={gpos.tolist()} ΔL2={delta_g.tolist()}")
 
                     # ΔL2 @ <SOC_L> and vector diagnostics
-                    if INJECT_MODE == "full" and self.soc_l is not None:
+                    if INJECT_MODE in ("full", "local") and self.soc_l is not None:
                         lpos = (input_ids[b] == self.soc_l).nonzero(as_tuple=True)[0]
                         if lpos.numel() > 0:
                             delta_l = (embs[b, lpos, :] - orig_embs[b, lpos, :]).norm(dim=1)
@@ -610,7 +618,7 @@ def parse_args():
                     help="Path to save RSA results CSV.")
 
     beh = p.add_argument_group("Behavior toggles")
-    beh.add_argument("--inject", choices=["full","global","none"], default=INJECT_MODE,
+    beh.add_argument("--inject", choices=["full","global","local","none"], default=INJECT_MODE,
                      help="Injection mode for social tokens.")
     beh.add_argument("--pool", choices=["all","exclude_soc","only_soc","locals_only","eos"], default=POOL_MODE,
                      help="Pooling mode before RSA.")
@@ -729,6 +737,10 @@ def main():
         if INJECT_MODE in ("full", "global"):
             if socg_id is None or socg_id == tok.unk_token_id:
                 raise RuntimeError(f"{SOC_G} token not present in tokenizer vocab (source={TOKENIZER_DIR or LM_PATH_OR_ID}).")
+
+        if INJECT_MODE in ("full", "local"):
+            if soc_l_id is None or soc_l_id == tok.unk_token_id:
+                raise RuntimeError(f"{SOC_L} token not present in tokenizer vocab (source={TOKENIZER_DIR or LM_PATH_OR_ID}).")
 
         with Timer("load projector"):
             proj = load_projector_from_ckpt(CHECKPOINT, lm.config.hidden_size)
