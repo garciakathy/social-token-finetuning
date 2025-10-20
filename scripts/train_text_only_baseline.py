@@ -333,11 +333,23 @@ def main():
 
     # Setup optimizer and scheduler
     print("\nSetting up optimizer...")
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=args.lr,
-        weight_decay=args.weight_decay
-    )
+
+    # Try to use 8-bit AdamW if available (saves ~75% optimizer memory)
+    try:
+        import bitsandbytes as bnb
+        optimizer = bnb.optim.AdamW8bit(
+            model.parameters(),
+            lr=args.lr,
+            weight_decay=args.weight_decay
+        )
+        print("Using 8-bit AdamW (bitsandbytes) - saves ~75% optimizer memory")
+    except ImportError:
+        print("bitsandbytes not found, using standard AdamW")
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=args.lr,
+            weight_decay=args.weight_decay
+        )
 
     total_steps = len(train_loader) * args.epochs // args.gradient_accumulation_steps
     scheduler = get_linear_schedule_with_warmup(
