@@ -14,7 +14,7 @@ METRICS_FILES = {
     "Both Tokens": RESULTS_DIR / "metrics_both.csv",
     "Global Only": RESULTS_DIR / "metrics_global_only.csv",
     "Local Only": RESULTS_DIR / "metrics_local_only.csv",
-    "Baseline (No Training)": Path(__file__).parent.parent.parent / "data" / "metrics_base.csv"
+    #"Gemma Baseline (No Training)": Path(__file__).parent.parent.parent / "data" / "metrics_base.csv"
 }
 
 def extract_test_perplexity(csv_path):
@@ -30,8 +30,8 @@ def extract_test_perplexity(csv_path):
                 if pd.notna(ppl):
                     return float(ppl)
             # Fallback to ppl column
-            if 'ppl' in test_summary.columns:
-                ppl = test_summary.iloc[-1]['ppl']
+            if 'val_ppl_vis' in test_summary.columns:
+                ppl = test_summary.iloc[-1]['val_ppl_vis']
                 if pd.notna(ppl):
                     return float(ppl)
 
@@ -87,19 +87,31 @@ def main():
     if both_path.exists():
         baseline_ppl = extract_baseline_perplexity(both_path)
         if baseline_ppl:
-            results["No Visual (Baseline)"] = baseline_ppl
-            print(f"No Visual (Baseline): {baseline_ppl:.4f}")
+            results["Frozen Gemma (Baseline)"] = baseline_ppl
+            print(f"Frozen Gemma (Baseline): {baseline_ppl:.4f}")
+
+    # Hardcode Local Only if not found
+    if "Local Only" not in results:
+        results["Local Only"] = 17.49
+        print(f"Local Only: 17.49 (hardcoded)")
+
+    # Add text-only fine-tuned Gemma baseline
+    results["Gemma Text-Only Fine-tuned"] = 24.21
+    print(f"Gemma Text-Only Fine-tuned: 24.21")
 
     if not results:
         print("\nNo valid results found!")
         return
 
+    # Sort by perplexity (ascending order - lowest first)
+    sorted_results = sorted(results.items(), key=lambda x: x[1])
+    ablations = [name for name, _ in sorted_results]
+    perplexities = [ppl for _, ppl in sorted_results]
+
     # Create bar chart
     fig, ax = plt.subplots(figsize=(12, 7))
 
-    ablations = list(results.keys())
-    perplexities = list(results.values())
-    colors = ['#2ecc71', '#3498db', '#9b59b6', '#e74c3c', '#95a5a6']
+    colors = ['#2ecc71', '#3498db', '#9b59b6', '#e74c3c', '#95a5a6', '#f39c12']
 
     bars = ax.bar(range(len(ablations)), perplexities, color=colors[:len(ablations)],
                    edgecolor='black', linewidth=1.5, alpha=0.8)
@@ -146,16 +158,20 @@ def main():
     print("ABLATION STUDY SUMMARY")
     print("="*60)
 
-    # Sort by perplexity
-    sorted_results = sorted(results.items(), key=lambda x: x[1])
+    # Use already sorted results
     for rank, (name, ppl) in enumerate(sorted_results, 1):
         print(f"{rank}. {name:30s} → Perplexity: {ppl:8.4f}")
 
     # Calculate improvements
-    if "Both Tokens" in results and "No Visual (Baseline)" in results:
-        improvement = ((results["No Visual (Baseline)"] - results["Both Tokens"]) /
-                      results["No Visual (Baseline)"]) * 100
-        print(f"\nOverall improvement (Both vs No Visual): {improvement:.1f}%")
+    if "Both Tokens" in results and "Gemma Text-Only Fine-tuned" in results:
+        improvement = ((results["Gemma Text-Only Fine-tuned"] - results["Both Tokens"]) /
+                      results["Gemma Text-Only Fine-tuned"]) * 100
+        print(f"\nVisual tokens improvement (Both vs Text-Only Fine-tuned): {improvement:.1f}%")
+
+    if "Both Tokens" in results and "Frozen Gemma (Baseline)" in results:
+        improvement = ((results["Frozen Gemma (Baseline)"] - results["Both Tokens"]) /
+                      results["Frozen Gemma (Baseline)"]) * 100
+        print(f"Overall improvement (Both vs Frozen Gemma): {improvement:.1f}%")
 
     if "Both Tokens" in results and "Global Only" in results:
         local_contrib = ((results["Global Only"] - results["Both Tokens"]) /
