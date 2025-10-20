@@ -841,8 +841,6 @@ def main():
             if sim_rsm.shape[0] != len(uid_order):
                 _log(f"[WARN] RSM size {sim_rsm.shape} != N items {len(uid_order)}; will min-align.", level="warning")
             n = min(sim_rsm.shape[0], len(uid_order))
-            tri = np.triu_indices(n, k=1)
-            sim_flat = sim_rsm[:n, :n][tri]
 
             results = []
             best_layer_uid = None
@@ -850,13 +848,19 @@ def main():
             best_features = None
 
             for layer_uid, X in features_by_uid.items():
-                Xn = X[:n]
+                # Use actual number of features for this layer (may be less than n if extraction failed)
+                layer_n = min(n, X.shape[0])
+                Xn = X[:layer_n]
+
+                # Compute triangle indices for this layer's actual size
+                tri = np.triu_indices(layer_n, k=1)
+                sim_flat = sim_rsm[:layer_n, :layer_n][tri]
 
                 rsm = 1 - pairwise_distances(Xn, metric='correlation')
                 model_flat = rsm[tri]
                 rho, p = spearmanr(sim_flat, model_flat)
                 results.append({"layer_uid": layer_uid, "spearman": float(rho), "p": float(p)})
-                _log(f"[RSA] {layer_uid}: r={rho:.4f}, p={p:.2e}")
+                _log(f"[RSA] {layer_uid}: r={rho:.4f}, p={p:.2e} (n={layer_n})")
 
                 # Track best layer for saving
                 if rho > best_rho:
