@@ -126,11 +126,13 @@ def compute_perplexity(model, dataloader, device):
     return perplexity, avg_loss
 
 
-def train_epoch(model, dataloader, optimizer, scheduler, device, epoch, log_interval=10):
+def train_epoch(model, dataloader, optimizer, scheduler, device, epoch, log_interval=10,
+                gradient_accumulation_steps=1, scaler=None):
     """Train for one epoch."""
     model.train()
     total_loss = 0
     total_tokens = 0
+    optimizer.zero_grad()
 
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
     for step, batch in enumerate(pbar):
@@ -141,26 +143,44 @@ def train_epoch(model, dataloader, optimizer, scheduler, device, epoch, log_inte
         labels = input_ids.clone()
         labels[attention_mask == 0] = -100  # Ignore padding in loss
 
-        # Forward pass
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-        loss = outputs.loss
+        # Forward pass with mixed precision
+        if scaler is not None:
+            with torch.amp.autocast('cuda'):
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                loss = outputs.loss / gradient_accumulation_steps
+        else:
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+            loss = outputs.loss / gradient_accumulation_steps
 
         # Backward pass
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-        scheduler.step()
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
+
+        # Optimizer step with gradient accumulation
+        if (step + 1) % gradient_accumulation_steps == 0:
+            if scaler is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+
+            optimizer.zero_grad()
+            scheduler.step()
 
         # Track metrics
         num_tokens = (attention_mask == 1).sum().item()
-        total_loss += loss.item() * num_tokens
+        total_loss += loss.item() * num_tokens * gradient_accumulation_steps
         total_tokens += num_tokens
 
         if step % log_interval == 0:
             avg_loss = total_loss / total_tokens if total_tokens > 0 else 0
             ppl = torch.exp(torch.tensor(avg_loss)).item()
-            pbar.set_postfix({'loss': f'{loss.item():.4f}', 'ppl': f'{ppl:.2f}', 'lr': f'{scheduler.get_last_lr()[0]:.2e}'})
+            pbar.set_postfix({'loss': f'{loss.item()*gradient_accumulation_steps:.4f}', 'ppl': f'{ppl:.2f}', 'lr': f'{scheduler.get_last_lr()[0]:.2e}'})
 
     avg_loss = total_loss / total_tokens
     perplexity = torch.exp(torch.tensor(avg_loss)).item()
@@ -188,6 +208,8 @@ def main():
                         help='Batch size for training')
     parser.add_argument('--val-batch-size', type=int, default=8,
                         help='Batch size for validation')
+    parser.add_argument('--gradient-accumulation-steps', type=int, default=1,
+                        help='Number of gradient accumulation steps')
     parser.add_argument('--epochs', type=int, default=10,
                         help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=5e-5,
@@ -196,6 +218,10 @@ def main():
                         help='Number of warmup steps')
     parser.add_argument('--weight-decay', type=float, default=0.01,
                         help='Weight decay')
+    parser.add_argument('--mixed-precision', action='store_true',
+                        help='Use mixed precision (fp16) training')
+    parser.add_argument('--gradient-checkpointing', action='store_true',
+                        help='Enable gradient checkpointing to save memory')
 
     # Output
     parser.add_argument('--output-dir', type=str, default='outputs/text_only_baseline',
@@ -245,14 +271,23 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = 'right'
 
+    # Load model with appropriate dtype
+    dtype = torch.float16 if args.mixed_precision else torch.float32
     model = AutoModelForCausalLM.from_pretrained(
         args.model_id,
-        torch_dtype=torch.float32
+        torch_dtype=dtype
     )
     model.config.pad_token_id = tokenizer.pad_token_id
+
+    # Enable gradient checkpointing if requested
+    if args.gradient_checkpointing:
+        model.gradient_checkpointing_enable()
+        print("Gradient checkpointing enabled")
+
     model = model.to(args.device)
 
     print(f"Model loaded with {sum(p.numel() for p in model.parameters())/1e6:.1f}M parameters")
+    print(f"Using dtype: {dtype}")
 
     # Create datasets
     print("\nCreating datasets...")
@@ -297,15 +332,22 @@ def main():
         weight_decay=args.weight_decay
     )
 
-    total_steps = len(train_loader) * args.epochs
+    total_steps = len(train_loader) * args.epochs // args.gradient_accumulation_steps
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
         num_warmup_steps=args.warmup_steps,
         num_training_steps=total_steps
     )
 
+    # Setup mixed precision scaler
+    scaler = torch.cuda.amp.GradScaler() if args.mixed_precision else None
+
     print(f"Total training steps: {total_steps}")
     print(f"Warmup steps: {args.warmup_steps}")
+    print(f"Gradient accumulation steps: {args.gradient_accumulation_steps}")
+    print(f"Effective batch size: {args.batch_size * args.gradient_accumulation_steps}")
+    if args.mixed_precision:
+        print("Mixed precision (fp16) enabled")
 
     # Training loop
     print("\n" + "=" * 70)
@@ -321,7 +363,9 @@ def main():
 
         # Train
         train_loss, train_ppl = train_epoch(
-            model, train_loader, optimizer, scheduler, args.device, epoch, args.log_interval
+            model, train_loader, optimizer, scheduler, args.device, epoch, args.log_interval,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            scaler=scaler
         )
 
         print(f"Train Loss: {train_loss:.4f} | Train PPL: {train_ppl:.2f}")

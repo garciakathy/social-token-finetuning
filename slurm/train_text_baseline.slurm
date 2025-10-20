@@ -34,18 +34,21 @@ fi
 echo "Python: $(which python)"
 python --version
 
-# Run training
+# Run training with memory-efficient settings
 python scripts/train_text_only_baseline.py \
   --captions-csv data/captions.csv \
   --model-id google/gemma-2-2b \
-  --batch-size 8 \
-  --val-batch-size 16 \
+  --batch-size 2 \
+  --val-batch-size 4 \
+  --gradient-accumulation-steps 4 \
   --epochs 20 \
   --lr 5e-5 \
   --warmup-steps 100 \
   --output-dir ~/data/seamless/outputs/text_only_baseline \
   --save-every 5 \
   --num-workers 4 \
+  --mixed-precision \
+  --gradient-checkpointing \
   --device cuda
 
 echo "Job finished at $(date)"
