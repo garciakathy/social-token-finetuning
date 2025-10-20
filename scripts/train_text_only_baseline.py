@@ -160,13 +160,16 @@ def train_epoch(model, dataloader, optimizer, scheduler, device, epoch, log_inte
 
         # Optimizer step with gradient accumulation
         if (step + 1) % gradient_accumulation_steps == 0:
+            # Clip gradients
             if scaler is not None:
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+            # Optimizer step
+            if scaler is not None:
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
 
             optimizer.zero_grad()
@@ -271,13 +274,14 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = 'right'
 
-    # Load model with appropriate dtype
-    dtype = torch.float16 if args.mixed_precision else torch.float32
+    # Load model in FP32 (mixed precision only affects forward pass via autocast)
     model = AutoModelForCausalLM.from_pretrained(
         args.model_id,
-        torch_dtype=dtype
+        torch_dtype=torch.float32,
+        attn_implementation='eager'  # Recommended for Gemma2
     )
     model.config.pad_token_id = tokenizer.pad_token_id
+    model.config.use_cache = False  # Required for gradient checkpointing
 
     # Enable gradient checkpointing if requested
     if args.gradient_checkpointing:
@@ -287,7 +291,10 @@ def main():
     model = model.to(args.device)
 
     print(f"Model loaded with {sum(p.numel() for p in model.parameters())/1e6:.1f}M parameters")
-    print(f"Using dtype: {dtype}")
+    if args.mixed_precision:
+        print("Using mixed precision (FP16 forward, FP32 backward)")
+    else:
+        print("Using FP32")
 
     # Create datasets
     print("\nCreating datasets...")
