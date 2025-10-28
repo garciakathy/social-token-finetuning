@@ -8,13 +8,13 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=04:00:00
-#SBATCH --array=0-14   # 3 inject * 5 pool = 15 combos
+#SBATCH --array=0-19   # 4 inject * 5 pool = 20 combos
 
 set -e -o pipefail
 datetime=$(date +"%Y%m%d_%H%M%S")
 
 ########## Combos ##########
-injects=(full global none)
+injects=(full global local none)
 pools=(all exclude_soc only_soc locals_only eos)
 Ni=${#injects[@]}
 Np=${#pools[@]}
