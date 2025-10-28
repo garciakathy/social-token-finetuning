@@ -7,16 +7,16 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --time=04:00:00
+#SBATCH --time=08:00:00
 
 set -e -o pipefail
 datetime=$(date +"%Y%m%d_%H%M%S")
 
 ########## Paths & files (edit if needed) ##########
-RSA_SCRIPT="../scripts/analysis/sim_judg_rsa_gemma.py"
-LM_ID="google/gemma-2-2b"
-TOKENIZER_DIR="/home/kgarci18/data_lisik3/kgarci18/seamless/outputs/nextutt_runs/run_ddp_08"
-PROJECTOR_CKPT="/home/kgarci18/data_lisik3/kgarci18/seamless/outputs/nextutt_runs/run_ddp_08/checkpoints/projector_only.pt"
+RSA_SCRIPT="/home/kgarci18/code/social-token-finetuning/scripts/analysis/sim_judg_rsa_gemma_2.py"
+LM_ID="google/gemma-2-2b-it"
+TOKENIZER_DIR="/home/kgarci18/data/seamless/outputs/test_single_gpu"
+PROJECTOR_CKPT="/home/kgarci18/data/seamless/outputs/test_single_gpu/checkpoints/projector_only.pt"
 OOO_INDEX="/home/kgarci18/data_lisik3/kgarci18/seamless/outputs/rsa/utils/ooo_index_ordered_for_rsa.csv"
 SIM_RSM="/home/kgarci18/data_lisik3/kgarci18/seamless/outputs/rsa/utils/sim_judge_train_rsm.csv"
 SAVE_FEATS_BASE="/home/kgarci18/data_lisik3/kgarci18/seamless/outputs/rsa/features"
@@ -63,7 +63,7 @@ fi
 
 ########## Per-combo outputs ##########
 SAVE_FEATS="${SAVE_FEATS_BASE}/inj_${INJECT}_pool_${POOL}_${datetime}"
-RESULTS_CSV="/home/kgarci18/data_lisik3/kgarci18/seamless/outputs/rsa/gemma_${INJECT}_${POOL}_simjudg_rsa_${datetime}.csv"
+RESULTS_CSV="/home/kgarci18/data/seamless/outputs/rsa/results/gemma_${INJECT}_${POOL}_simjudg_rsa_${datetime}.csv"
 mkdir -p "$SAVE_FEATS"
 
 QUIET_FLAG=""
