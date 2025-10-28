@@ -23,6 +23,9 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, __version__ as tra
 from sklearn.metrics import pairwise_distances
 from scipy.stats import spearmanr
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend for cluster
 
 # deepjuice
 from deepjuice.extraction import get_feature_maps
@@ -596,6 +599,56 @@ class SOCWrapper(nn.Module):
         return m
 
 # ----------------------
+# RSM Visualization
+# ----------------------
+def plot_rsm_comparison(human_rsm: np.ndarray,
+                        model_features: np.ndarray,
+                        layer_name: str,
+                        spearman_r: float,
+                        spearman_p: float,
+                        save_path: str):
+    """
+    Plot human similarity matrix and model RSM side-by-side for visual comparison.
+
+    Args:
+        human_rsm: Human similarity judgment matrix [N, N]
+        model_features: Model features [N, D] from which to compute RSM
+        layer_name: Name of the model layer
+        spearman_r: Spearman correlation between the two
+        spearman_p: p-value
+        save_path: Where to save the figure
+    """
+    # Compute model RSM
+    model_rsm = 1 - pairwise_distances(model_features, metric='correlation')
+
+    # Create figure with two subplots
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    # Plot 1: Human Similarity Matrix
+    im1 = axes[0].imshow(human_rsm, cmap='viridis', aspect='auto', interpolation='nearest')
+    axes[0].set_title('Human Similarity Judgments\n(from behavioral data)', fontsize=13, fontweight='bold')
+    axes[0].set_xlabel('Item Index')
+    axes[0].set_ylabel('Item Index')
+    plt.colorbar(im1, ax=axes[0], fraction=0.046, pad=0.04, label='Similarity')
+
+    # Plot 2: Model RSM
+    im2 = axes[1].imshow(model_rsm, cmap='viridis', aspect='auto', interpolation='nearest')
+    axes[1].set_title(f'Model RSM ({layer_name})\n(1 - Pearson correlation distance)', fontsize=13, fontweight='bold')
+    axes[1].set_xlabel('Item Index')
+    axes[1].set_ylabel('Item Index')
+    plt.colorbar(im2, ax=axes[1], fraction=0.046, pad=0.04, label='Similarity')
+
+    # Add overall title with Spearman correlation
+    fig.suptitle(f'RSM Comparison (Spearman r={spearman_r:.4f}, p={spearman_p:.2e})',
+                 fontsize=15, fontweight='bold', y=0.99)
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+    _log(f"[PLOT] Saved RSM comparison to: {save_path}")
+
+# ----------------------
 # CLI
 # ----------------------
 def parse_args():
@@ -890,6 +943,17 @@ def main():
                 out_npz = os.path.join(SAVE_FEATURES_DIR, f"{INJECT_MODE}_{POOL_MODE}_{best_layer_uid.replace('/', '_')}_best.npz")
                 np.savez(out_npz, X=best_features, uids=np.array(uid_order[:n], dtype=object))
                 _log(f"[SAVE] Best layer features saved to: {out_npz}  shape={best_features.shape}")
+
+                # Plot RSM comparison for best layer
+                plot_path = os.path.join(SAVE_FEATURES_DIR, f"{INJECT_MODE}_{POOL_MODE}_{best_layer_uid.replace('/', '_')}_rsm_comparison.png")
+                plot_rsm_comparison(
+                    human_rsm=sim_rsm[:n, :n],
+                    model_features=best_features,
+                    layer_name=best_layer_uid,
+                    spearman_r=best['spearman'],
+                    spearman_p=best['p'],
+                    save_path=plot_path
+                )
         else:
             _log("[FINISHED] No results computed.", level="warning")
         df_res.to_csv(RESULTS_CSV, index=False)
