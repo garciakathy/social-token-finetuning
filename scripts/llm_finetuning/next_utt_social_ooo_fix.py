@@ -268,10 +268,45 @@ class GemmaWithInjection(nn.Module):
         assert self.id_soc_g != self.tokenizer.unk_token_id, f"{SOC_G} not in tokenizer"
         assert self.id_soc_l != self.tokenizer.unk_token_id, f"{SOC_L} not in tokenizer"
 
+    def _strip_social_tokens(self, input_ids, attention_mask, labels):
+        """
+        Remove all social token positions from input_ids, attention_mask, and labels.
+        Returns new tensors with social tokens removed.
+        """
+        B, T = input_ids.shape
+        device = input_ids.device
+
+        # Create mask of positions to keep (not social tokens)
+        keep_mask = (input_ids != self.id_soc_g) & (input_ids != self.id_soc_l)  # [B, T]
+
+        # Find the new max sequence length after removal
+        new_lengths = keep_mask.sum(dim=1)  # [B]
+        max_new_len = new_lengths.max().item()
+
+        # Initialize new tensors
+        new_input_ids = torch.full((B, max_new_len), self.tokenizer.pad_token_id, dtype=input_ids.dtype, device=device)
+        new_attention_mask = torch.zeros((B, max_new_len), dtype=attention_mask.dtype, device=device)
+        new_labels = torch.full((B, max_new_len), -100, dtype=labels.dtype, device=device)
+
+        # Fill in the kept positions for each batch element
+        for b in range(B):
+            kept_positions = keep_mask[b].nonzero(as_tuple=False).squeeze(-1)
+            n_kept = kept_positions.size(0)
+            if n_kept > 0:
+                new_input_ids[b, :n_kept] = input_ids[b, kept_positions]
+                new_attention_mask[b, :n_kept] = attention_mask[b, kept_positions]
+                new_labels[b, :n_kept] = labels[b, kept_positions]
+
+        return new_input_ids, new_attention_mask, new_labels
+
     def forward(self, input_ids, attention_mask, labels, proj_global, proj_locals, inject_visuals=True, ablation_mode="both"):
         """
         ablation_mode: 'both', 'global_only', 'local_only', 'none'
         """
+        # For 'none' ablation, completely remove social tokens from the sequence
+        if ablation_mode == "none" and not inject_visuals:
+            input_ids, attention_mask, labels = self._strip_social_tokens(input_ids, attention_mask, labels)
+
         emb = self.lm.get_input_embeddings()(input_ids)  # [B,T,H]
         if inject_visuals:
             dtype = emb.dtype
