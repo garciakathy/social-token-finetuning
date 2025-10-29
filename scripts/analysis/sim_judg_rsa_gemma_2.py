@@ -167,9 +167,15 @@ def load_projector_from_ckpt(projector_path: str, lm_hidden: int):
     state = {_strip_pref(k): v for k,v in state.items()}
     groups = {}
     for k, v in state.items():
-        if k.endswith(".weight") or k.endswith(".bias"):
+        if k.endswith(".weight") or k.endswith(".bias") or k.endswith(".g") or k.endswith(".b"):
             prefix = k.rsplit(".", 1)[0]
-            groups.setdefault(prefix, {})[k.split(".")[-1]] = v
+            suffix = k.split(".")[-1]
+            # Normalize ScaleShift suffixes to weight/bias for consistent handling
+            if suffix == "g":
+                suffix = "weight"
+            elif suffix == "b":
+                suffix = "bias"
+            groups.setdefault(prefix, {})[suffix] = v
     layers = []; prev_lin = False
     def nkey(s):
         m = re.search(r"(\d+)", s)
