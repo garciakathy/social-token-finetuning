@@ -143,6 +143,23 @@ def _strip_pref(k: str) -> str:
         if k.startswith(pref): return k[len(pref):]
     return k
 
+class ScaleShift(nn.Module):
+    """RMS normalization followed by learnable scale and shift.
+
+    Used in VisualProjector during training. Must be reconstructed properly
+    during evaluation to match training behavior.
+    """
+    def __init__(self, dim: int, g: Optional[torch.Tensor] = None, b: Optional[torch.Tensor] = None):
+        super().__init__()
+        self.g = nn.Parameter(g if g is not None else torch.ones(dim))
+        self.b = nn.Parameter(b if b is not None else torch.zeros(dim))
+
+    def forward(self, x):
+        eps = 1e-6
+        rms = x.pow(2).mean(dim=-1, keepdim=True).add(eps).sqrt()
+        x_normalized = x / rms
+        return x_normalized * self.g + self.b
+
 def load_projector_from_ckpt(projector_path: str, lm_hidden: int):
     _log(f"[LOAD] projector={projector_path}")
     raw = torch.load(projector_path, map_location="cpu")
@@ -160,6 +177,7 @@ def load_projector_from_ckpt(projector_path: str, lm_hidden: int):
     for p in sorted(groups.keys(), key=nkey):
         W = groups[p].get("weight"); B = groups[p].get("bias")
         if W.ndim == 2:
+            # Linear layer
             lin = nn.Linear(W.shape[1], W.shape[0], bias=B is not None)
             with torch.no_grad():
                 lin.weight.copy_(W)
@@ -167,11 +185,23 @@ def load_projector_from_ckpt(projector_path: str, lm_hidden: int):
             if prev_lin: layers.append(nn.GELU())
             layers.append(lin); prev_lin = True
         elif W.ndim == 1:
-            ln = nn.LayerNorm(W.shape[0], elementwise_affine=True)
-            with torch.no_grad():
-                ln.weight.copy_(W)
-                if B is not None: ln.bias.copy_(B)
-            layers.append(ln); prev_lin = False
+            # 1D parameters: could be ScaleShift or LayerNorm
+            # VisualProjector uses ScaleShift by default, so assume ScaleShift
+            # ScaleShift: g (weight) and b (bias) are both 1D parameters
+            if B is not None and B.ndim == 1:
+                # Both g and b present and 1D -> ScaleShift
+                _log(f"[LOAD] Detected ScaleShift layer: {p} (dim={W.shape[0]})")
+                ss = ScaleShift(W.shape[0], g=W.clone(), b=B.clone())
+                layers.append(ss)
+            else:
+                # Fallback to LayerNorm (shouldn't happen with VisualProjector)
+                _log(f"[LOAD] Detected LayerNorm layer: {p} (dim={W.shape[0]})")
+                ln = nn.LayerNorm(W.shape[0], elementwise_affine=True)
+                with torch.no_grad():
+                    ln.weight.copy_(W)
+                    if B is not None: ln.bias.copy_(B)
+                layers.append(ln)
+            prev_lin = False
     proj = nn.Sequential(*layers).to(device=DEVICE, dtype=torch.float32).eval()
     with torch.no_grad():
         y = proj(torch.zeros(2, 768, dtype=torch.float32, device=DEVICE))
