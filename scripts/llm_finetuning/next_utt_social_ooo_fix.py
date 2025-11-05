@@ -1242,38 +1242,65 @@ def generate_examples(
 
             if inject_visuals:
                 # Global features
-                gvecs = batch.get("global_vecs")
-                if gvecs and any(v is not None for v in gvecs):
-                    gv_stack = torch.stack([torch.from_numpy(v) if v is not None else torch.zeros(768) for v in gvecs], dim=0).to(device)
-                    proj_g = projector(to_pdtype(gv_stack, projector))
+                if visual_mode == "vectors":
+                    # Vectors mode: global_vecs contains file paths to .npy files
+                    gvec_paths = batch.get("global_vecs", [])
+                    if gvec_paths and any(p is not None for p in gvec_paths):
+                        g_vecs = []
+                        for pth in gvec_paths:
+                            if pth and isinstance(pth, str) and os.path.exists(pth):
+                                g = np.load(pth).astype(np.float32)
+                            else:
+                                g = np.zeros((768,), dtype=np.float32)
+                            g_vecs.append(torch.from_numpy(g))
+                        g_cls = torch.stack(g_vecs, dim=0)
+                        g_cls = to_pdtype(g_cls, projector)
+                        proj_g = projector(g_cls)
+                # Note: frames mode would need image loading and DINO encoding
+                # For now, generation examples focus on vectors mode
 
-                # Local features
-                locals_npzs = batch.get("locals_npzs")
-                loc_word_ids = batch.get("loc_word_ids")
-                if locals_npzs and loc_word_ids:
-                    proj_l_list = []
-                    for b in range(B):
-                        if locals_npzs[b] is None or not loc_word_ids[b]:
-                            proj_l_list.append(None)
-                            continue
-                        npz_obj = np.load(locals_npzs[b], allow_pickle=True)
-                        word_ids = loc_word_ids[b]
-                        vecs = []
-                        for wid in word_ids:
-                            keys_to_try = [str(wid), wid, f"{wid}"]
-                            found = False
-                            for k in keys_to_try:
-                                if k in npz_obj:
-                                    vecs.append(torch.from_numpy(npz_obj[k]))
-                                    found = True
-                                    break
-                            if not found:
-                                vecs.append(torch.zeros(768))
-                        if vecs:
-                            loc_tensor = torch.stack(vecs, dim=0).to(device)
-                            proj_l_list.append(projector(to_pdtype(loc_tensor, projector)))
-                        else:
-                            proj_l_list.append(None)
+                # Local features (vectors mode)
+                if visual_mode == "vectors":
+                    locals_npzs = batch.get("locals_npzs")
+                    loc_word_ids = batch.get("loc_word_ids")
+                    if locals_npzs and loc_word_ids:
+                        proj_l_list = []
+                        for b in range(B):
+                            npz_path = locals_npzs[b]
+                            word_ids = loc_word_ids[b] if isinstance(loc_word_ids, list) and b < len(loc_word_ids) else []
+
+                            if not npz_path or not word_ids:
+                                proj_l_list.append(None)
+                                continue
+
+                            if not os.path.exists(npz_path):
+                                proj_l_list.append(None)
+                                continue
+
+                            arr = np.load(npz_path, allow_pickle=True)
+                            vecs = []
+                            for wid in word_ids:
+                                # Try different key formats
+                                v = None
+                                if wid in arr:
+                                    v = arr[wid]
+                                elif str(wid) in arr:
+                                    v = arr[str(wid)]
+                                else:
+                                    # Try various patterns
+                                    for pat in (f"w_{wid}", f"idx_{wid}", f"word_{wid}", f"{wid:05d}"):
+                                        if pat in arr:
+                                            v = arr[pat]
+                                            break
+
+                                if v is not None:
+                                    vecs.append(torch.from_numpy(v.astype(np.float32)))
+
+                            if vecs:
+                                loc_tensor = torch.stack(vecs, dim=0).to(device)
+                                proj_l_list.append(projector(to_pdtype(loc_tensor, projector)))
+                            else:
+                                proj_l_list.append(None)
 
             # For each sample in batch
             for b in range(min(B, num_examples - len(examples))):
