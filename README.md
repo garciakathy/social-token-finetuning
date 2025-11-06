@@ -432,7 +432,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 For questions or issues, please:
 - Open an issue on GitHub
-- Contact: [your-email@institution.edu]
+- Contact: [kgarci18@jhu.edu]
 
 ---
 
