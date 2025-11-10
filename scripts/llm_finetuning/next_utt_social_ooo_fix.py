@@ -1463,6 +1463,9 @@ def generate_examples_frozen(
     )
     frozen_lm.eval()
 
+    # DEBUG: Print tokenizer info
+    print(f"[DEBUG Generation] Training tokenizer vocab: {len(tokenizer)}, Frozen tokenizer vocab: {len(frozen_tokenizer)}")
+
     # Get social token IDs from TRAINING tokenizer (for stripping)
     soc_g_token = "<SOC_G>"
     soc_l_token = "<SOC_L>"
@@ -1470,6 +1473,7 @@ def generate_examples_frozen(
     soc_l_id = tokenizer.convert_tokens_to_ids(soc_l_token)
 
     examples = []
+    debug_count = 0
 
     with torch.no_grad():
         for batch in test_loader:
@@ -1503,7 +1507,16 @@ def generate_examples_frozen(
 
                 # Strip dataset-specific formatting markers for natural text baseline
                 # Remove [CAP]: markers which are dataset-specific and not in pretrained model's training data
+                prompt_text_before = prompt_text
                 prompt_text = re.sub(r'\[CAP\]:\s*', '', prompt_text).strip()
+
+                # DEBUG: Print first example details
+                if debug_count == 0:
+                    print(f"\n[DEBUG Generation Example {len(examples)}]")
+                    print(f"  Original prompt (training tok): '{prompt_text_before[:50]}'")
+                    print(f"  After stripping [CAP]: '{prompt_text}'")
+                    print(f"  Ground truth: '{ground_truth[:50]}'")
+                    debug_count += 1
 
                 # Re-tokenize with frozen tokenizer (ensures only known tokens)
                 frozen_prompt_encoded = frozen_tokenizer(
@@ -1513,6 +1526,12 @@ def generate_examples_frozen(
                 )
                 frozen_prompt_ids = frozen_prompt_encoded["input_ids"].to(device)
                 frozen_prompt_attn = frozen_prompt_encoded["attention_mask"].to(device)
+
+                # DEBUG: Print tokenization details
+                if debug_count == 1:
+                    print(f"  Frozen prompt IDs: {frozen_prompt_ids[0].tolist()}")
+                    print(f"  Frozen prompt length: {frozen_prompt_ids.size(1)}")
+                    print(f"  Has BOS? {frozen_tokenizer.bos_token_id in frozen_prompt_ids[0].tolist()}")
 
                 # Generate text autoregressively with frozen model
                 generated_ids = frozen_prompt_ids.clone()
@@ -2107,12 +2126,19 @@ def train_and_eval(
         )
         frozen_lm.eval()
 
+        # DEBUG: Print tokenizer info
+        if rank == 0:
+            print(f"[DEBUG] Training tokenizer vocab size: {len(tokenizer)}")
+            print(f"[DEBUG] Frozen tokenizer vocab size: {len(frozen_tokenizer)}")
+            print(f"[DEBUG] Frozen tokenizer BOS: {frozen_tokenizer.bos_token_id}, EOS: {frozen_tokenizer.eos_token_id}, PAD: {frozen_tokenizer.pad_token_id}")
+
         # Get social token IDs from the TRAINING tokenizer (for stripping)
         id_soc_g = tokenizer.convert_tokens_to_ids(SOC_G)
         id_soc_l = tokenizer.convert_tokens_to_ids(SOC_L)
 
         local_loss_sum = 0.0
         local_tok_sum = 0
+        debug_batch_count = 0
 
         with torch.no_grad():
             for step, batch in enumerate(loader):
@@ -2186,12 +2212,29 @@ def train_and_eval(
                     target_encoded = frozen_tokenizer(target_text, add_special_tokens=False)  # Don't add BOS again
                     target_ids = target_encoded["input_ids"]
 
+                    # DEBUG: Print first batch details
+                    if debug_batch_count == 0 and b == 0 and rank == 0:
+                        print(f"\n[DEBUG Batch {step}, Sample {b}]")
+                        print(f"  Prompt text: '{prompt_text}'")
+                        print(f"  Target text: '{target_text}'")
+                        print(f"  Prompt IDs: {prompt_ids[:10]}... (len={len(prompt_ids)})")
+                        print(f"  Target IDs: {target_ids[:10]}... (len={len(target_ids)})")
+                        print(f"  Prompt has BOS? {frozen_tokenizer.bos_token_id in prompt_ids}")
+                        print(f"  Target has EOS? {frozen_tokenizer.eos_token_id in target_ids}")
+
                     # Concatenate
                     full_ids = prompt_ids + target_ids
                     full_attn = [1] * len(full_ids)
 
                     # Create labels (mask prompt)
                     labels = [-100] * prompt_len + target_ids
+
+                    # DEBUG: Print label structure
+                    if debug_batch_count == 0 and b == 0 and rank == 0:
+                        print(f"  Full IDs: {full_ids[:15]}... (len={len(full_ids)})")
+                        print(f"  Labels: {labels[:15]}... (len={len(labels)})")
+                        print(f"  Num masked tokens: {labels.count(-100)}")
+                        print(f"  Num target tokens: {len([l for l in labels if l != -100])}")
 
                     new_input_ids_list.append(torch.tensor(full_ids, dtype=torch.long))
                     new_attention_mask_list.append(torch.tensor(full_attn, dtype=torch.long))
@@ -2211,14 +2254,54 @@ def train_and_eval(
                     new_attention_mask[b, :seq_len] = new_attention_mask_list[b]
                     new_labels[b, :seq_len] = new_labels_list[b]
 
+                # DEBUG: Print batch info before forward pass
+                if debug_batch_count == 0 and rank == 0:
+                    print(f"\n[DEBUG Before Forward Pass]")
+                    print(f"  Input shape: {new_input_ids.shape}")
+                    print(f"  Attention mask shape: {new_attention_mask.shape}")
+                    print(f"  Labels shape: {new_labels.shape}")
+                    print(f"  Pad ID being used: {pad_id}")
+                    # Print first sequence details
+                    seq0_len = (new_attention_mask[0] == 1).sum().item()
+                    print(f"  Seq[0] active length: {seq0_len}")
+                    print(f"  Seq[0] input_ids[:20]: {new_input_ids[0, :20].tolist()}")
+                    print(f"  Seq[0] labels[:20]: {new_labels[0, :20].tolist()}")
+                    label_tok = (new_labels[0] != -100).sum().item()
+                    print(f"  Seq[0] has {label_tok} target tokens")
+
                 # Forward pass through frozen model
                 out = frozen_lm(input_ids=new_input_ids, attention_mask=new_attention_mask, labels=new_labels)
                 loss = out.loss
+
+                # DEBUG: Print loss info
+                if debug_batch_count == 0 and rank == 0:
+                    print(f"\n[DEBUG After Forward Pass]")
+                    print(f"  Loss: {loss.item():.4f}")
+                    print(f"  Logits shape: {out.logits.shape}")
+                    # Get per-token losses
+                    shift_logits = out.logits[:, :-1, :].contiguous()
+                    shift_labels = new_labels[:, 1:].contiguous()
+                    loss_fct = torch.nn.CrossEntropyLoss(reduction='none', ignore_index=-100)
+                    per_token_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+                    valid_losses = per_token_loss[per_token_loss != 0]
+                    if valid_losses.numel() > 0:
+                        print(f"  Per-token losses (first 10): {valid_losses[:10].tolist()}")
+                        print(f"  Mean per-token loss: {valid_losses.mean().item():.4f}")
+                        print(f"  Max per-token loss: {valid_losses.max().item():.4f}")
+                    debug_batch_count += 1
 
                 n_lab_tok = int((new_labels != -100).sum().item())
                 if n_lab_tok > 0:
                     local_loss_sum += loss.item() * n_lab_tok
                     local_tok_sum += n_lab_tok
+
+                # DEBUG: Print running stats
+                if debug_batch_count == 1 and rank == 0:
+                    print(f"\n[DEBUG Running Stats After Batch {step}]")
+                    print(f"  Cumulative loss: {local_loss_sum:.4f}")
+                    print(f"  Cumulative tokens: {local_tok_sum}")
+                    print(f"  Avg loss so far: {local_loss_sum / max(local_tok_sum, 1):.4f}")
+                    print(f"  PPL so far: {math.exp(min(20.0, local_loss_sum / max(local_tok_sum, 1))):.2f}")
 
         avg_loss = local_loss_sum / max(local_tok_sum, 1)
         ppl = math.exp(min(20.0, max(avg_loss, 1e-8)))
