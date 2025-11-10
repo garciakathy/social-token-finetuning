@@ -2168,27 +2168,48 @@ def train_and_eval(
                     batch_target_texts.append(target_text)
 
                 # Re-tokenize with FROZEN tokenizer
-                # Concatenate prompt + target for each sample
-                full_texts = [p + t for p, t in zip(batch_texts, batch_target_texts)]
-                prompt_lengths = [len(frozen_tokenizer.encode(p, add_special_tokens=False)) for p in batch_texts]
+                # For each sample, tokenize prompt and target separately to get accurate lengths
+                new_input_ids_list = []
+                new_attention_mask_list = []
+                new_labels_list = []
 
-                # Tokenize all samples
-                encoded = frozen_tokenizer(
-                    full_texts,
-                    padding=True,
-                    truncation=True,
-                    max_length=512,
-                    return_tensors="pt"
-                )
-
-                new_input_ids = encoded["input_ids"].to(device)
-                new_attention_mask = encoded["attention_mask"].to(device)
-
-                # Create labels (mask prompt, only compute loss on target)
-                new_labels = new_input_ids.clone()
                 for b in range(B):
-                    prompt_len = prompt_lengths[b]
-                    new_labels[b, :prompt_len] = -100  # Don't compute loss on prompt
+                    prompt_text = batch_texts[b]
+                    target_text = batch_target_texts[b]
+
+                    # Tokenize prompt only (to get accurate length)
+                    prompt_encoded = frozen_tokenizer(prompt_text, add_special_tokens=True)
+                    prompt_ids = prompt_encoded["input_ids"]
+                    prompt_len = len(prompt_ids)
+
+                    # Tokenize target only
+                    target_encoded = frozen_tokenizer(target_text, add_special_tokens=False)  # Don't add BOS again
+                    target_ids = target_encoded["input_ids"]
+
+                    # Concatenate
+                    full_ids = prompt_ids + target_ids
+                    full_attn = [1] * len(full_ids)
+
+                    # Create labels (mask prompt)
+                    labels = [-100] * prompt_len + target_ids
+
+                    new_input_ids_list.append(torch.tensor(full_ids, dtype=torch.long))
+                    new_attention_mask_list.append(torch.tensor(full_attn, dtype=torch.long))
+                    new_labels_list.append(torch.tensor(labels, dtype=torch.long))
+
+                # Pad to same length
+                max_len = max(len(ids) for ids in new_input_ids_list)
+                pad_id = frozen_tokenizer.pad_token_id if frozen_tokenizer.pad_token_id is not None else frozen_tokenizer.eos_token_id
+
+                new_input_ids = torch.full((B, max_len), pad_id, dtype=torch.long, device=device)
+                new_attention_mask = torch.zeros((B, max_len), dtype=torch.long, device=device)
+                new_labels = torch.full((B, max_len), -100, dtype=torch.long, device=device)
+
+                for b in range(B):
+                    seq_len = len(new_input_ids_list[b])
+                    new_input_ids[b, :seq_len] = new_input_ids_list[b]
+                    new_attention_mask[b, :seq_len] = new_attention_mask_list[b]
+                    new_labels[b, :seq_len] = new_labels_list[b]
 
                 # Forward pass through frozen model
                 out = frozen_lm(input_ids=new_input_ids, attention_mask=new_attention_mask, labels=new_labels)
