@@ -1501,6 +1501,10 @@ def generate_examples_frozen(
                 # Decode prompt with TRAINING tokenizer, then re-tokenize with FROZEN tokenizer
                 prompt_text = tokenizer.decode(prompt_ids_stripped, skip_special_tokens=False)
 
+                # Strip dataset-specific formatting markers for natural text baseline
+                # Remove [CAP]: markers which are dataset-specific and not in pretrained model's training data
+                prompt_text = re.sub(r'\[CAP\]:\s*', '', prompt_text).strip()
+
                 # Re-tokenize with frozen tokenizer (ensures only known tokens)
                 frozen_prompt_encoded = frozen_tokenizer(
                     prompt_text,
@@ -2148,6 +2152,17 @@ def train_and_eval(
                     # Decode with TRAINING tokenizer
                     prompt_text = tokenizer.decode(prompt_ids_stripped, skip_special_tokens=False)
                     target_text = tokenizer.decode(target_ids, skip_special_tokens=False)
+
+                    # Strip dataset-specific formatting markers for natural text baseline
+                    # Remove [CAP]: markers which are dataset-specific and not in pretrained model's training data
+                    prompt_text = re.sub(r'\[CAP\]:\s*', '', prompt_text).strip()
+                    target_text = re.sub(r'\[CAP\]:\s*', '', target_text).strip()
+
+                    # Skip if prompt is empty after stripping
+                    if not prompt_text:
+                        prompt_text = " "  # Use space as minimal prompt
+                    if not target_text:
+                        target_text = " "  # Use space as minimal target
 
                     batch_texts.append(prompt_text)
                     batch_target_texts.append(target_text)
