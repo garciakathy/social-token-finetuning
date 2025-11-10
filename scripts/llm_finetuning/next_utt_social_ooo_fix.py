@@ -16,6 +16,13 @@ Vectors (recommended here):
 Frames mode (unchanged from prior; left intact for parity).
 
 DDP-safe, checkpointing, metrics CSV preserved.
+
+BASELINE FIX (2025-11-09):
+When ablation_mode='none', social tokens (<SOC_G>, <SOC_L>) are now COMPLETELY REMOVED
+from the input sequence to create a fair text-only baseline. This prevents the model from
+seeing meaningless token embeddings and provides an accurate perplexity comparison.
+Previous behavior: kept social token text but didn't inject visual embeddings (broken model).
+New behavior: removes social token text entirely (clean text-only baseline).
 """
 
 import os, re, math, json, argparse, time, csv, pickle, sys, random
@@ -305,7 +312,8 @@ class GemmaWithInjection(nn.Module):
         ablation_mode: 'both', 'global_only', 'local_only', 'none'
         """
         # For 'none' ablation, completely remove social tokens from the sequence
-        if ablation_mode == "none" and not inject_visuals:
+        # This creates a fair text-only baseline without meaningless token embeddings
+        if ablation_mode == "none":
             input_ids, attention_mask, labels = self._strip_social_tokens(input_ids, attention_mask, labels)
 
         emb = self.lm.get_input_embeddings()(input_ids)  # [B,T,H]
@@ -1312,6 +1320,20 @@ def generate_examples(
                 first_target_pos = label_mask.nonzero(as_tuple=False)[0].item()
                 prompt_ids = input_ids[b, :first_target_pos].unsqueeze(0)
                 prompt_attn = attention_mask[b, :first_target_pos].unsqueeze(0)
+
+                # For 'none' ablation mode, strip social tokens from prompt to create fair baseline
+                if ablation_mode == "none":
+                    # Get social token IDs
+                    soc_g_id = gemma_model.id_soc_g
+                    soc_l_id = gemma_model.id_soc_l
+
+                    # Create mask of positions to keep (not social tokens)
+                    keep_mask = (prompt_ids[0] != soc_g_id) & (prompt_ids[0] != soc_l_id)
+                    kept_positions = keep_mask.nonzero(as_tuple=False).squeeze(-1)
+
+                    if kept_positions.numel() > 0:
+                        prompt_ids = prompt_ids[:, kept_positions].contiguous()
+                        prompt_attn = prompt_attn[:, kept_positions].contiguous()
 
                 # Get ground truth
                 target_ids = labels[b][label_mask]
