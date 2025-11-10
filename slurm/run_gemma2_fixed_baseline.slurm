@@ -88,7 +88,7 @@ torchrun --nproc_per_node=4 scripts/llm_finetuning/next_utt_social_ooo_fix.py \
   --train-id-list "/home/kgarci18/data_lisik3/kgarci18/ooo/train_ids.txt" \
   --test-id-list "/home/kgarci18/data_lisik3/kgarci18/ooo/test_ids.txt" \
   --val-frac-of-train 0.2 \
-  --eval-ablations both none
+  --eval-ablations both frozen_baseline
 
 EXIT_CODE=$?
 
@@ -102,9 +102,10 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo "SUCCESS! Check results at: $OUT_DIR/logs/"
     echo ""
     echo "Verification checklist:"
-    echo "1. Check examples_none.json - should NOT have <SOC_G> or <SOC_L> in prompts"
-    echo "2. Check metrics.csv - test_ppl_no_vis should be reasonable (5-50, not 2000+)"
-    echo "3. Compare with old results in data/results/ppl/gemma2/"
+    echo "1. Check examples_frozen_baseline.json - should NOT have <SOC_G> or <SOC_L> in prompts"
+    echo "2. Check examples_frozen_baseline.json - should have sensible generated text (not garbage)"
+    echo "3. Check metrics.csv - test_ppl_frozen_baseline should be reasonable (5-50, not 2000+)"
+    echo "4. Compare test_ppl_vis vs test_ppl_frozen_baseline for honest improvement estimate"
 else
     echo "FAILED! Check error logs for details."
 fi

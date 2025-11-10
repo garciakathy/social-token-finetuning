@@ -55,7 +55,7 @@ SOC_L = "<SOC_L>"
 METRIC_COLS = [
     "split","epoch","step","loss","ppl","tokens","tok_per_s","dt_s",
     "lr_proj","lr_dino","gpu_mem_mb","g_has","l_has","ablation_mode",
-    "val_ppl_vis","val_ppl_no_vis","test_ppl_vis","test_ppl_no_vis"
+    "val_ppl_vis","val_ppl_frozen_baseline","test_ppl_vis","test_ppl_frozen_baseline"
 ]
 def init_metrics_csv(path: str):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -309,11 +309,14 @@ class GemmaWithInjection(nn.Module):
 
     def forward(self, input_ids, attention_mask, labels, proj_global, proj_locals, inject_visuals=True, ablation_mode="both"):
         """
-        ablation_mode: 'both', 'global_only', 'local_only', 'none'
+        ablation_mode: 'both', 'global_only', 'local_only', 'none', 'frozen_baseline'
+
+        Note: 'frozen_baseline' should be handled separately by loading a fresh pretrained model.
+        This forward() is only for the trained model with projector.
         """
-        # For 'none' ablation, completely remove social tokens from the sequence
+        # For 'none' or 'frozen_baseline' ablation, completely remove social tokens from the sequence
         # This creates a fair text-only baseline without meaningless token embeddings
-        if ablation_mode == "none":
+        if ablation_mode in ("none", "frozen_baseline"):
             input_ids, attention_mask, labels = self._strip_social_tokens(input_ids, attention_mask, labels)
 
         emb = self.lm.get_input_embeddings()(input_ids)  # [B,T,H]
@@ -1423,6 +1426,118 @@ def save_examples_to_file(examples: List[Dict], output_path: str):
     except Exception as e:
         print(f"⚠ Failed to save examples: {e}")
 
+def generate_examples_frozen(
+    lm_name: str,
+    tokenizer,
+    test_loader,
+    device,
+    num_examples: int = 5,
+    max_new_tokens: int = 50,
+    rank: int = 0
+) -> List[Dict[str, Any]]:
+    """
+    Generate examples using a frozen pretrained LLM (no training).
+    This provides a fair text-only baseline comparison.
+
+    Only runs on rank 0 to save memory.
+    """
+    if rank != 0:
+        return []
+
+    from transformers import AutoModelForCausalLM
+
+    print(f"[Frozen Baseline Generation] Loading pretrained model: {lm_name}")
+
+    # Load frozen pretrained model
+    frozen_lm = AutoModelForCausalLM.from_pretrained(
+        lm_name,
+        torch_dtype=torch.bfloat16,
+        device_map=device,
+        cache_dir=os.environ.get("HF_HOME")
+    )
+    frozen_lm.eval()
+
+    # Get social token IDs from tokenizer
+    soc_g_token = "<SOC_G>"
+    soc_l_token = "<SOC_L>"
+    soc_g_id = tokenizer.convert_tokens_to_ids(soc_g_token)
+    soc_l_id = tokenizer.convert_tokens_to_ids(soc_l_token)
+
+    examples = []
+
+    with torch.no_grad():
+        for batch in test_loader:
+            if len(examples) >= num_examples:
+                break
+
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            labels = batch["labels"].to(device)
+            B = input_ids.size(0)
+
+            # For each sample in batch
+            for b in range(min(B, num_examples - len(examples))):
+                # Find the prompt (everything before labels != -100)
+                label_mask = labels[b] != -100
+                if not label_mask.any():
+                    continue
+
+                first_target_pos = label_mask.nonzero(as_tuple=False)[0].item()
+                prompt_ids = input_ids[b, :first_target_pos].unsqueeze(0)
+                prompt_attn = attention_mask[b, :first_target_pos].unsqueeze(0)
+
+                # Strip social tokens from prompt for fair baseline
+                keep_mask = (prompt_ids[0] != soc_g_id) & (prompt_ids[0] != soc_l_id)
+                kept_positions = keep_mask.nonzero(as_tuple=False).squeeze(-1)
+
+                if kept_positions.numel() > 0:
+                    prompt_ids = prompt_ids[:, kept_positions].contiguous()
+                    prompt_attn = prompt_attn[:, kept_positions].contiguous()
+
+                # Get ground truth
+                target_ids = labels[b][label_mask]
+                ground_truth = tokenizer.decode(target_ids, skip_special_tokens=True)
+
+                # Get prompt text
+                prompt_text = tokenizer.decode(prompt_ids[0], skip_special_tokens=False)
+
+                # Generate text autoregressively with frozen model
+                generated_ids = prompt_ids.clone()
+                gen_attn_mask = prompt_attn.clone()
+
+                for _ in range(max_new_tokens):
+                    outputs = frozen_lm(input_ids=generated_ids, attention_mask=gen_attn_mask)
+                    next_token_logits = outputs.logits[0, -1, :]
+                    next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+
+                    # Stop if EOS token
+                    if next_token.item() == tokenizer.eos_token_id:
+                        break
+
+                    # Append token
+                    generated_ids = torch.cat([generated_ids, next_token.unsqueeze(0)], dim=1)
+                    gen_attn_mask = torch.cat([gen_attn_mask, torch.ones((1, 1), device=device, dtype=gen_attn_mask.dtype)], dim=1)
+
+                # Decode generated text (exclude prompt)
+                generated_text = tokenizer.decode(generated_ids[0, prompt_ids.size(1):], skip_special_tokens=True)
+
+                examples.append({
+                    "prompt_text": prompt_text,
+                    "ground_truth": ground_truth,
+                    "generated_text": generated_text,
+                    "ablation_mode": "frozen_baseline"
+                })
+
+            if len(examples) >= num_examples:
+                break
+
+    # Free memory
+    del frozen_lm
+    torch.cuda.empty_cache()
+
+    print(f"[Frozen Baseline Generation] Generated {len(examples)} examples")
+    return examples
+
 def train_and_eval(
     parent_dir: str,
     output_dir: str,
@@ -1950,6 +2065,82 @@ def train_and_eval(
                              g_has=g_has_total, l_has=l_has_total, ablation_mode=ablation_mode)
         return avg_loss, ppl
 
+    def run_frozen_baseline_eval(loader, epoch_idx: int, split_name: str, lm_name: str, tokenizer):
+        """
+        Evaluate frozen pretrained LLM (no training) on text-only input.
+        This provides a fair baseline comparison.
+        """
+        if rank != 0:
+            return 0.0, 0.0  # Only run on rank 0 to save memory
+
+        if rank == 0:
+            print(f"\n[Frozen Baseline Eval] Loading fresh pretrained model: {lm_name}")
+
+        # Load frozen pretrained model
+        frozen_lm = AutoModelForCausalLM.from_pretrained(
+            lm_name,
+            torch_dtype=torch.bfloat16,
+            device_map=device,
+            cache_dir=os.environ.get("HF_HOME")
+        )
+        frozen_lm.eval()
+
+        # Use the same tokenizer (which has social tokens added, but we'll strip them)
+        id_soc_g = tokenizer.convert_tokens_to_ids(SOC_G)
+        id_soc_l = tokenizer.convert_tokens_to_ids(SOC_L)
+
+        local_loss_sum = 0.0
+        local_tok_sum = 0
+
+        with torch.no_grad():
+            for step, batch in enumerate(loader):
+                if batch["input_ids"].size(0) == 0:
+                    continue
+
+                input_ids = batch["input_ids"].to(device, non_blocking=True)
+                attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+                labels = batch["labels"].to(device, non_blocking=True)
+
+                # Strip social tokens from input
+                B, T = input_ids.shape
+                keep_mask = (input_ids != id_soc_g) & (input_ids != id_soc_l)
+                new_lengths = keep_mask.sum(dim=1)
+                max_new_len = new_lengths.max().item()
+
+                new_input_ids = torch.full((B, max_new_len), tokenizer.pad_token_id, dtype=input_ids.dtype, device=device)
+                new_attention_mask = torch.zeros((B, max_new_len), dtype=attention_mask.dtype, device=device)
+                new_labels = torch.full((B, max_new_len), -100, dtype=labels.dtype, device=device)
+
+                for b in range(B):
+                    kept_positions = keep_mask[b].nonzero(as_tuple=False).squeeze(-1)
+                    n_kept = kept_positions.size(0)
+                    if n_kept > 0:
+                        new_input_ids[b, :n_kept] = input_ids[b, kept_positions]
+                        new_attention_mask[b, :n_kept] = attention_mask[b, kept_positions]
+                        new_labels[b, :n_kept] = labels[b, kept_positions]
+
+                # Forward pass through frozen model
+                out = frozen_lm(input_ids=new_input_ids, attention_mask=new_attention_mask, labels=new_labels)
+                loss = out.loss
+
+                n_lab_tok = int((new_labels != -100).sum().item())
+                local_loss_sum += loss.item() * max(n_lab_tok, 1)
+                local_tok_sum += max(n_lab_tok, 1)
+
+        avg_loss = local_loss_sum / max(local_tok_sum, 1)
+        ppl = math.exp(min(20.0, max(avg_loss, 1e-8)))
+
+        if rank == 0:
+            print(f"[Frozen Baseline] {split_name} loss={avg_loss:.4f} ppl={ppl:.2f}")
+            write_metric_row(metrics_path, split=f"{split_name}_frozen", epoch=epoch_idx, step=-1,
+                           loss=avg_loss, ppl=ppl, ablation_mode="frozen_baseline")
+
+        # Free memory
+        del frozen_lm
+        torch.cuda.empty_cache()
+
+        return avg_loss, ppl
+
     best_epoch = start_epoch - 1
     train_ablation = run_config.get("train_ablation_mode", "both")
     eval_ablations = run_config.get("eval_ablations", ["both", "none"])
@@ -1977,11 +2168,15 @@ def train_and_eval(
         # Evaluation with multiple ablation modes
         val_results = {}
         for abl_mode in eval_ablations:
-            inject = (abl_mode != "none")
-            split_suffix = abl_mode if abl_mode != "both" else "vis"
-            split_suffix = "novis" if abl_mode == "none" else split_suffix
-            v_loss, v_ppl = run_epoch(val_loader, ep, train=False, inject_visuals=inject,
-                                      split_name=f"val_{split_suffix}", ablation_mode=abl_mode)
+            if abl_mode == "frozen_baseline":
+                # Special handling: evaluate frozen pretrained model
+                v_loss, v_ppl = run_frozen_baseline_eval(val_loader, ep, "val", lm_name, gemma.tokenizer)
+            else:
+                inject = (abl_mode != "none")
+                split_suffix = abl_mode if abl_mode != "both" else "vis"
+                split_suffix = "novis" if abl_mode == "none" else split_suffix
+                v_loss, v_ppl = run_epoch(val_loader, ep, train=False, inject_visuals=inject,
+                                          split_name=f"val_{split_suffix}", ablation_mode=abl_mode)
             val_results[abl_mode] = (v_loss, v_ppl)
 
         if rank == 0:
@@ -1989,12 +2184,15 @@ def train_and_eval(
             print(f"[Epoch {ep:02d}] train({train_ablation}) ppl {tr_ppl:.2f} | val ppl: {ppl_str}")
             write_metric_row(metrics_path, split="train_summary", epoch=ep, step=-1, loss=tr_loss, ppl=tr_ppl,
                              ablation_mode=train_ablation)
-            # Write summary with backward-compatible column names
+            # Write summary with updated column names
             summary_kw = {"split": "val_summary", "epoch": ep, "step": -1}
             if "both" in val_results:
                 summary_kw["val_ppl_vis"] = val_results["both"][1]
+            if "frozen_baseline" in val_results:
+                summary_kw["val_ppl_frozen_baseline"] = val_results["frozen_baseline"][1]
+            # Legacy support
             if "none" in val_results:
-                summary_kw["val_ppl_no_vis"] = val_results["none"][1]
+                summary_kw["val_ppl_frozen_baseline"] = val_results["none"][1]
             write_metric_row(metrics_path, **summary_kw)
 
         # Use "both" mode results for checkpointing (or first available mode)
@@ -2010,44 +2208,64 @@ def train_and_eval(
     # Test with all ablation modes
     test_results = {}
     for abl_mode in eval_ablations:
-        inject = (abl_mode != "none")
-        split_suffix = abl_mode if abl_mode != "both" else "vis"
-        split_suffix = "novis" if abl_mode == "none" else split_suffix
-        t_loss, t_ppl = run_epoch(test_loader, epochs+1, train=False, inject_visuals=inject,
-                                  split_name=f"test_{split_suffix}", ablation_mode=abl_mode)
+        if abl_mode == "frozen_baseline":
+            # Special handling: evaluate frozen pretrained model
+            t_loss, t_ppl = run_frozen_baseline_eval(test_loader, epochs+1, "test", lm_name, gemma.tokenizer)
+        else:
+            inject = (abl_mode != "none")
+            split_suffix = abl_mode if abl_mode != "both" else "vis"
+            split_suffix = "novis" if abl_mode == "none" else split_suffix
+            t_loss, t_ppl = run_epoch(test_loader, epochs+1, train=False, inject_visuals=inject,
+                                      split_name=f"test_{split_suffix}", ablation_mode=abl_mode)
         test_results[abl_mode] = (t_loss, t_ppl)
 
     if rank == 0:
         test_ppl_str = " | ".join([f"{mode}={test_results[mode][1]:.2f}" for mode in eval_ablations])
         print(f"[TEST] ppl: {test_ppl_str}")
         print(f"[best] epoch={best_epoch} val_ppl({primary_mode})={best_val:.4f} | checkpoints → {os.path.join(output_dir,'checkpoints')}")
-        # Write summary with backward-compatible column names
+        # Write summary with new column names
         test_summary_kw = {"split": "test_summary", "epoch": epochs+1, "step": -1}
         if "both" in test_results:
             test_summary_kw["test_ppl_vis"] = test_results["both"][1]
+        if "frozen_baseline" in test_results:
+            test_summary_kw["test_ppl_frozen_baseline"] = test_results["frozen_baseline"][1]
+        # Legacy support for old 'none' mode
         if "none" in test_results:
-            test_summary_kw["test_ppl_no_vis"] = test_results["none"][1]
+            test_summary_kw["test_ppl_frozen_baseline"] = test_results["none"][1]
         write_metric_row(metrics_path, **test_summary_kw)
 
         # === GENERATION EXAMPLES ===
         print("\n[Generating example predictions...]")
         all_examples = {}
         for abl_mode in eval_ablations:
-            inject = (abl_mode != "none")
-            examples = generate_examples(
-                gemma_model=gemma,
-                projector=projector,
-                dino=dino,
-                tokenizer=gemma.tokenizer,
-                test_loader=test_loader,
-                device=device,
-                visual_mode=visual_mode,
-                num_examples=5,
-                max_new_tokens=50,
-                inject_visuals=inject,
-                ablation_mode=abl_mode,
-                rank=rank
-            )
+            if abl_mode == "frozen_baseline":
+                # Use frozen pretrained model for generation
+                examples = generate_examples_frozen(
+                    lm_name=lm_name,
+                    tokenizer=gemma.tokenizer,
+                    test_loader=test_loader,
+                    device=device,
+                    num_examples=5,
+                    max_new_tokens=50,
+                    rank=rank
+                )
+            else:
+                # Use trained model for generation
+                inject = (abl_mode != "none")
+                examples = generate_examples(
+                    gemma_model=gemma,
+                    projector=projector,
+                    dino=dino,
+                    tokenizer=gemma.tokenizer,
+                    test_loader=test_loader,
+                    device=device,
+                    visual_mode=visual_mode,
+                    num_examples=5,
+                    max_new_tokens=50,
+                    inject_visuals=inject,
+                    ablation_mode=abl_mode,
+                    rank=rank
+                )
             all_examples[abl_mode] = examples
 
             # Print examples for this mode
@@ -2153,9 +2371,9 @@ def main():
     ap.add_argument("--train-ablation-mode", type=str, default="both",
                     choices=["both", "global_only", "local_only", "none"],
                     help="Which visual tokens to use during training: 'both' (default), 'global_only', 'local_only', or 'none'.")
-    ap.add_argument("--eval-ablations", type=str, nargs="+", default=["both", "none"],
-                    choices=["both", "global_only", "local_only", "none"],
-                    help="List of ablation modes to evaluate (default: both none). Use to run comprehensive ablation studies.")
+    ap.add_argument("--eval-ablations", type=str, nargs="+", default=["both", "frozen_baseline"],
+                    choices=["both", "global_only", "local_only", "none", "frozen_baseline"],
+                    help="List of ablation modes to evaluate (default: both frozen_baseline). 'frozen_baseline' loads a fresh pretrained model for fair text-only comparison.")
 
     args = ap.parse_args()
 
