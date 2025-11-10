@@ -1440,15 +1440,21 @@ def generate_examples_frozen(
     This provides a fair text-only baseline comparison.
 
     Only runs on rank 0 to save memory.
+
+    Key: Loads fresh tokenizer to avoid special token vocab issues.
     """
     if rank != 0:
         return []
 
-    from transformers import AutoModelForCausalLM
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     print(f"[Frozen Baseline Generation] Loading pretrained model: {lm_name}")
 
-    # Load frozen pretrained model
+    # Load frozen pretrained model AND fresh tokenizer
+    frozen_tokenizer = AutoTokenizer.from_pretrained(
+        lm_name,
+        cache_dir=os.environ.get("HF_HOME")
+    )
     frozen_lm = AutoModelForCausalLM.from_pretrained(
         lm_name,
         torch_dtype=torch.bfloat16,
@@ -1457,7 +1463,7 @@ def generate_examples_frozen(
     )
     frozen_lm.eval()
 
-    # Get social token IDs from tokenizer
+    # Get social token IDs from TRAINING tokenizer (for stripping)
     soc_g_token = "<SOC_G>"
     soc_l_token = "<SOC_L>"
     soc_g_id = tokenizer.convert_tokens_to_ids(soc_g_token)
@@ -1471,7 +1477,6 @@ def generate_examples_frozen(
                 break
 
             input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"].to(device)
             B = input_ids.size(0)
 
@@ -1483,27 +1488,31 @@ def generate_examples_frozen(
                     continue
 
                 first_target_pos = label_mask.nonzero(as_tuple=False)[0].item()
-                prompt_ids = input_ids[b, :first_target_pos].unsqueeze(0)
-                prompt_attn = attention_mask[b, :first_target_pos].unsqueeze(0)
+                prompt_ids = input_ids[b, :first_target_pos]
 
-                # Strip social tokens from prompt for fair baseline
-                keep_mask = (prompt_ids[0] != soc_g_id) & (prompt_ids[0] != soc_l_id)
-                kept_positions = keep_mask.nonzero(as_tuple=False).squeeze(-1)
-
-                if kept_positions.numel() > 0:
-                    prompt_ids = prompt_ids[:, kept_positions].contiguous()
-                    prompt_attn = prompt_attn[:, kept_positions].contiguous()
+                # Strip social tokens from prompt
+                keep_mask = (prompt_ids != soc_g_id) & (prompt_ids != soc_l_id)
+                prompt_ids_stripped = prompt_ids[keep_mask]
 
                 # Get ground truth
                 target_ids = labels[b][label_mask]
-                ground_truth = tokenizer.decode(target_ids, skip_special_tokens=True)
+                ground_truth = tokenizer.decode(target_ids, skip_special_tokens=False)
 
-                # Get prompt text
-                prompt_text = tokenizer.decode(prompt_ids[0], skip_special_tokens=False)
+                # Decode prompt with TRAINING tokenizer, then re-tokenize with FROZEN tokenizer
+                prompt_text = tokenizer.decode(prompt_ids_stripped, skip_special_tokens=False)
+
+                # Re-tokenize with frozen tokenizer (ensures only known tokens)
+                frozen_prompt_encoded = frozen_tokenizer(
+                    prompt_text,
+                    return_tensors="pt",
+                    add_special_tokens=True
+                )
+                frozen_prompt_ids = frozen_prompt_encoded["input_ids"].to(device)
+                frozen_prompt_attn = frozen_prompt_encoded["attention_mask"].to(device)
 
                 # Generate text autoregressively with frozen model
-                generated_ids = prompt_ids.clone()
-                gen_attn_mask = prompt_attn.clone()
+                generated_ids = frozen_prompt_ids.clone()
+                gen_attn_mask = frozen_prompt_attn.clone()
 
                 for _ in range(max_new_tokens):
                     outputs = frozen_lm(input_ids=generated_ids, attention_mask=gen_attn_mask)
@@ -1511,7 +1520,7 @@ def generate_examples_frozen(
                     next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
 
                     # Stop if EOS token
-                    if next_token.item() == tokenizer.eos_token_id:
+                    if next_token.item() == frozen_tokenizer.eos_token_id:
                         break
 
                     # Append token
@@ -1519,7 +1528,8 @@ def generate_examples_frozen(
                     gen_attn_mask = torch.cat([gen_attn_mask, torch.ones((1, 1), device=device, dtype=gen_attn_mask.dtype)], dim=1)
 
                 # Decode generated text (exclude prompt)
-                generated_text = tokenizer.decode(generated_ids[0, prompt_ids.size(1):], skip_special_tokens=True)
+                prompt_len = frozen_prompt_ids.size(1)
+                generated_text = frozen_tokenizer.decode(generated_ids[0, prompt_len:], skip_special_tokens=True)
 
                 examples.append({
                     "prompt_text": prompt_text,
@@ -1532,7 +1542,7 @@ def generate_examples_frozen(
                 break
 
     # Free memory
-    del frozen_lm
+    del frozen_lm, frozen_tokenizer
     torch.cuda.empty_cache()
 
     print(f"[Frozen Baseline Generation] Generated {len(examples)} examples")
@@ -2069,6 +2079,8 @@ def train_and_eval(
         """
         Evaluate frozen pretrained LLM (no training) on text-only input.
         This provides a fair baseline comparison.
+
+        Key: Load fresh tokenizer to avoid special token vocab issues.
         """
         if rank != 0:
             return 0.0, 0.0  # Only run on rank 0 to save memory
@@ -2076,7 +2088,13 @@ def train_and_eval(
         if rank == 0:
             print(f"\n[Frozen Baseline Eval] Loading fresh pretrained model: {lm_name}")
 
-        # Load frozen pretrained model
+        from transformers import AutoTokenizer
+
+        # Load frozen pretrained model AND fresh tokenizer (without special tokens)
+        frozen_tokenizer = AutoTokenizer.from_pretrained(
+            lm_name,
+            cache_dir=os.environ.get("HF_HOME")
+        )
         frozen_lm = AutoModelForCausalLM.from_pretrained(
             lm_name,
             torch_dtype=torch.bfloat16,
@@ -2085,7 +2103,7 @@ def train_and_eval(
         )
         frozen_lm.eval()
 
-        # Use the same tokenizer (which has social tokens added, but we'll strip them)
+        # Get social token IDs from the TRAINING tokenizer (for stripping)
         id_soc_g = tokenizer.convert_tokens_to_ids(SOC_G)
         id_soc_l = tokenizer.convert_tokens_to_ids(SOC_L)
 
@@ -2100,32 +2118,71 @@ def train_and_eval(
                 input_ids = batch["input_ids"].to(device, non_blocking=True)
                 attention_mask = batch["attention_mask"].to(device, non_blocking=True)
                 labels = batch["labels"].to(device, non_blocking=True)
+                B = input_ids.size(0)
 
-                # Strip social tokens from input
-                B, T = input_ids.shape
+                # Strip social tokens AND re-tokenize with fresh tokenizer
+                # This ensures we only use tokens the frozen model knows
                 keep_mask = (input_ids != id_soc_g) & (input_ids != id_soc_l)
-                new_lengths = keep_mask.sum(dim=1)
-                max_new_len = new_lengths.max().item()
 
-                new_input_ids = torch.full((B, max_new_len), tokenizer.pad_token_id, dtype=input_ids.dtype, device=device)
-                new_attention_mask = torch.zeros((B, max_new_len), dtype=attention_mask.dtype, device=device)
-                new_labels = torch.full((B, max_new_len), -100, dtype=labels.dtype, device=device)
-
+                # Process each sequence
+                batch_texts = []
+                batch_target_texts = []
                 for b in range(B):
-                    kept_positions = keep_mask[b].nonzero(as_tuple=False).squeeze(-1)
-                    n_kept = kept_positions.size(0)
-                    if n_kept > 0:
-                        new_input_ids[b, :n_kept] = input_ids[b, kept_positions]
-                        new_attention_mask[b, :n_kept] = attention_mask[b, kept_positions]
-                        new_labels[b, :n_kept] = labels[b, kept_positions]
+                    # Find the prompt/target split (where labels != -100)
+                    label_mask = labels[b] != -100
+                    if not label_mask.any():
+                        batch_texts.append("")
+                        batch_target_texts.append("")
+                        continue
+
+                    first_target_pos = label_mask.nonzero(as_tuple=False)[0].item()
+
+                    # Get prompt (before first target) - strip social tokens
+                    prompt_ids = input_ids[b, :first_target_pos]
+                    prompt_keep_mask = keep_mask[b, :first_target_pos]
+                    prompt_ids_stripped = prompt_ids[prompt_keep_mask]
+
+                    # Get target (the part we're predicting)
+                    target_ids = labels[b][label_mask]
+
+                    # Decode with TRAINING tokenizer
+                    prompt_text = tokenizer.decode(prompt_ids_stripped, skip_special_tokens=False)
+                    target_text = tokenizer.decode(target_ids, skip_special_tokens=False)
+
+                    batch_texts.append(prompt_text)
+                    batch_target_texts.append(target_text)
+
+                # Re-tokenize with FROZEN tokenizer
+                # Concatenate prompt + target for each sample
+                full_texts = [p + t for p, t in zip(batch_texts, batch_target_texts)]
+                prompt_lengths = [len(frozen_tokenizer.encode(p, add_special_tokens=False)) for p in batch_texts]
+
+                # Tokenize all samples
+                encoded = frozen_tokenizer(
+                    full_texts,
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                    return_tensors="pt"
+                )
+
+                new_input_ids = encoded["input_ids"].to(device)
+                new_attention_mask = encoded["attention_mask"].to(device)
+
+                # Create labels (mask prompt, only compute loss on target)
+                new_labels = new_input_ids.clone()
+                for b in range(B):
+                    prompt_len = prompt_lengths[b]
+                    new_labels[b, :prompt_len] = -100  # Don't compute loss on prompt
 
                 # Forward pass through frozen model
                 out = frozen_lm(input_ids=new_input_ids, attention_mask=new_attention_mask, labels=new_labels)
                 loss = out.loss
 
                 n_lab_tok = int((new_labels != -100).sum().item())
-                local_loss_sum += loss.item() * max(n_lab_tok, 1)
-                local_tok_sum += max(n_lab_tok, 1)
+                if n_lab_tok > 0:
+                    local_loss_sum += loss.item() * n_lab_tok
+                    local_tok_sum += n_lab_tok
 
         avg_loss = local_loss_sum / max(local_tok_sum, 1)
         ppl = math.exp(min(20.0, max(avg_loss, 1e-8)))
@@ -2136,7 +2193,7 @@ def train_and_eval(
                            loss=avg_loss, ppl=ppl, ablation_mode="frozen_baseline")
 
         # Free memory
-        del frozen_lm
+        del frozen_lm, frozen_tokenizer
         torch.cuda.empty_cache()
 
         return avg_loss, ppl
