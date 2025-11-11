@@ -1509,8 +1509,9 @@ def generate_examples_frozen(
 
                 # Strip dataset-specific formatting markers for natural text baseline
                 # Remove [CAP]: markers which are dataset-specific and not in pretrained model's training data
+                # IMPORTANT: Do NOT use .strip() - it removes spaces that affect tokenization!
                 prompt_text_before = prompt_text
-                prompt_text = re.sub(r'\[CAP\]:\s*', '', prompt_text).strip()
+                prompt_text = re.sub(r'\[CAP\]:\s*', '', prompt_text)
 
                 # DEBUG: Print first example details
                 if debug_count == 0:
@@ -2184,13 +2185,14 @@ def train_and_eval(
 
                     # Strip dataset-specific formatting markers for natural text baseline
                     # Remove [CAP]: markers which are dataset-specific and not in pretrained model's training data
-                    prompt_text = re.sub(r'\[CAP\]:\s*', '', prompt_text).strip()
-                    target_text = re.sub(r'\[CAP\]:\s*', '', target_text).strip()
+                    # IMPORTANT: Do NOT use .strip() - it removes spaces that affect tokenization!
+                    prompt_text = re.sub(r'\[CAP\]:\s*', '', prompt_text)
+                    target_text = re.sub(r'\[CAP\]:\s*', '', target_text)
 
                     # Skip if prompt is empty after stripping
-                    if not prompt_text:
+                    if not prompt_text.strip():
                         prompt_text = " "  # Use space as minimal prompt
-                    if not target_text:
+                    if not target_text.strip():
                         target_text = " "  # Use space as minimal target
 
                     batch_texts.append(prompt_text)
