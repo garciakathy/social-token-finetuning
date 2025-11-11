@@ -2215,6 +2215,11 @@ def train_and_eval(
                     target_encoded = frozen_tokenizer(target_text, add_special_tokens=False)  # Don't add BOS again
                     target_ids = target_encoded["input_ids"]
 
+                    # IMPORTANT: Add EOS token to target since we stripped it during decoding
+                    # The model expects sequences to end with EOS
+                    if frozen_tokenizer.eos_token_id is not None:
+                        target_ids = target_ids + [frozen_tokenizer.eos_token_id]
+
                     # DEBUG: Print first batch details
                     if debug_batch_count == 0 and b == 0 and rank == 0:
                         print(f"\n[DEBUG Batch {step}, Sample {b}]")
