@@ -1509,9 +1509,9 @@ def generate_examples_frozen(
 
                 # Strip dataset-specific formatting markers for natural text baseline
                 # Remove [CAP]: markers which are dataset-specific and not in pretrained model's training data
-                # IMPORTANT: Do NOT use .strip() - it removes spaces that affect tokenization!
+                # IMPORTANT: Only strip trailing spaces, not leading (leading spaces affect tokenization!)
                 prompt_text_before = prompt_text
-                prompt_text = re.sub(r'\[CAP\]:\s*', '', prompt_text)
+                prompt_text = re.sub(r'\[CAP\]:\s*', '', prompt_text).rstrip()
 
                 # DEBUG: Print first example details
                 if debug_count == 0:
@@ -2185,9 +2185,9 @@ def train_and_eval(
 
                     # Strip dataset-specific formatting markers for natural text baseline
                     # Remove [CAP]: markers which are dataset-specific and not in pretrained model's training data
-                    # IMPORTANT: Do NOT use .strip() - it removes spaces that affect tokenization!
-                    prompt_text = re.sub(r'\[CAP\]:\s*', '', prompt_text)
-                    target_text = re.sub(r'\[CAP\]:\s*', '', target_text)
+                    # IMPORTANT: Only strip trailing spaces, not leading (leading spaces affect tokenization!)
+                    prompt_text = re.sub(r'\[CAP\]:\s*', '', prompt_text).rstrip()
+                    target_text = re.sub(r'\[CAP\]:\s*', '', target_text).rstrip()
 
                     # Skip if prompt is empty after stripping
                     if not prompt_text.strip():
