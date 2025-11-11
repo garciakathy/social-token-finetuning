@@ -2225,12 +2225,17 @@ def train_and_eval(
                     # DEBUG: Print first batch details
                     if debug_batch_count == 0 and b == 0 and rank == 0:
                         print(f"\n[DEBUG Batch {step}, Sample {b}]")
-                        print(f"  Prompt text: '{prompt_text}'")
-                        print(f"  Target text: '{target_text}'")
+                        print(f"  Prompt text: '{prompt_text}' (repr={repr(prompt_text)}, len={len(prompt_text)})")
+                        print(f"  Target text: '{target_text}' (repr={repr(target_text)}, len={len(target_text)})")
                         print(f"  Prompt IDs: {prompt_ids[:10]}... (len={len(prompt_ids)})")
                         print(f"  Target IDs: {target_ids[:10]}... (len={len(target_ids)})")
                         print(f"  Prompt has BOS? {frozen_tokenizer.bos_token_id in prompt_ids}")
                         print(f"  Target has EOS? {frozen_tokenizer.eos_token_id in target_ids}")
+                        # Decode each prompt token individually
+                        print(f"  Prompt tokens individually:")
+                        for i, tok_id in enumerate(prompt_ids):
+                            tok_text = frozen_tokenizer.decode([tok_id], skip_special_tokens=False)
+                            print(f"    Token {i}: ID={tok_id}, Text={repr(tok_text)}")
                         # Verify tokenization is reversible
                         prompt_decoded_back = frozen_tokenizer.decode(prompt_ids, skip_special_tokens=True)
                         target_decoded_back = frozen_tokenizer.decode([t for t in target_ids if t != frozen_tokenizer.eos_token_id], skip_special_tokens=True)
