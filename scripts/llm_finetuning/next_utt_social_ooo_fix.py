@@ -1500,10 +1500,12 @@ def generate_examples_frozen(
 
                 # Get ground truth
                 target_ids = labels[b][label_mask]
-                ground_truth = tokenizer.decode(target_ids, skip_special_tokens=False)
+                # IMPORTANT: skip_special_tokens=True to properly handle EOS
+                ground_truth = tokenizer.decode(target_ids, skip_special_tokens=True)
 
                 # Decode prompt with TRAINING tokenizer, then re-tokenize with FROZEN tokenizer
-                prompt_text = tokenizer.decode(prompt_ids_stripped, skip_special_tokens=False)
+                # IMPORTANT: skip_special_tokens=True to properly handle EOS
+                prompt_text = tokenizer.decode(prompt_ids_stripped, skip_special_tokens=True)
 
                 # Strip dataset-specific formatting markers for natural text baseline
                 # Remove [CAP]: markers which are dataset-specific and not in pretrained model's training data
@@ -2176,8 +2178,9 @@ def train_and_eval(
                     target_ids = labels[b][label_mask]
 
                     # Decode with TRAINING tokenizer
-                    prompt_text = tokenizer.decode(prompt_ids_stripped, skip_special_tokens=False)
-                    target_text = tokenizer.decode(target_ids, skip_special_tokens=False)
+                    # IMPORTANT: skip_special_tokens=True to properly handle EOS
+                    prompt_text = tokenizer.decode(prompt_ids_stripped, skip_special_tokens=True)
+                    target_text = tokenizer.decode(target_ids, skip_special_tokens=True)
 
                     # Strip dataset-specific formatting markers for natural text baseline
                     # Remove [CAP]: markers which are dataset-specific and not in pretrained model's training data
