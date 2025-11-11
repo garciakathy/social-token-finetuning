@@ -2187,13 +2187,19 @@ def train_and_eval(
                     # Remove [CAP]: markers which are dataset-specific and not in pretrained model's training data
                     # IMPORTANT: Only strip trailing spaces, not leading (leading spaces affect tokenization!)
                     prompt_text = re.sub(r'\[CAP\]:\s*', '', prompt_text).rstrip()
-                    target_text = re.sub(r'\[CAP\]:\s*', '', target_text).rstrip()
+                    target_text = re.sub(r'\[CAP\]:\s*', '', target_text).strip()  # Full strip for target
 
                     # Skip if prompt is empty after stripping
                     if not prompt_text.strip():
                         prompt_text = " "  # Use space as minimal prompt
                     if not target_text.strip():
                         target_text = " "  # Use space as minimal target
+
+                    # IMPORTANT: Ensure target has leading space for natural tokenization
+                    # Target words appear mid-sentence, so they need a leading space
+                    # e.g., " a" + " young" not " a" + "young"
+                    if target_text and not target_text.startswith(' '):
+                        target_text = ' ' + target_text
 
                     batch_texts.append(prompt_text)
                     batch_target_texts.append(target_text)
