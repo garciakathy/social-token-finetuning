@@ -2255,6 +2255,14 @@ def train_and_eval(
                     # Create labels (mask prompt)
                     labels = [-100] * prompt_len + target_ids
 
+                    # IMPORTANT: Mask EOS token in loss computation
+                    # These are truncated single-word targets, not complete sentences
+                    # The model is penalized for not predicting premature EOS (unnatural)
+                    # Mask EOS to evaluate only on content words
+                    if frozen_tokenizer.eos_token_id is not None and len(labels) > 0:
+                        if labels[-1] == frozen_tokenizer.eos_token_id:
+                            labels[-1] = -100
+
                     # DEBUG: Print label structure
                     if debug_batch_count == 0 and b == 0 and rank == 0:
                         print(f"  Full IDs: {full_ids[:15]}... (len={len(full_ids)})")
