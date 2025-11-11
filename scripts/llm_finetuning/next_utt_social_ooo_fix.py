@@ -2229,6 +2229,11 @@ def train_and_eval(
                         print(f"  Target IDs: {target_ids[:10]}... (len={len(target_ids)})")
                         print(f"  Prompt has BOS? {frozen_tokenizer.bos_token_id in prompt_ids}")
                         print(f"  Target has EOS? {frozen_tokenizer.eos_token_id in target_ids}")
+                        # Verify tokenization is reversible
+                        prompt_decoded_back = frozen_tokenizer.decode(prompt_ids, skip_special_tokens=True)
+                        target_decoded_back = frozen_tokenizer.decode([t for t in target_ids if t != frozen_tokenizer.eos_token_id], skip_special_tokens=True)
+                        print(f"  Prompt roundtrip: '{prompt_text}' -> IDs -> '{prompt_decoded_back}' (match: {prompt_text == prompt_decoded_back})")
+                        print(f"  Target roundtrip: '{target_text}' -> IDs -> '{target_decoded_back}' (match: {target_text == target_decoded_back})")
 
                     # Concatenate
                     full_ids = prompt_ids + target_ids
