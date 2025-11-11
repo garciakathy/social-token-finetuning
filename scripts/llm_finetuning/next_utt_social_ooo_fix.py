@@ -2304,7 +2304,8 @@ def train_and_eval(
                     print(f"\n[DEBUG After Forward Pass]")
                     print(f"  Loss: {loss.item():.4f}")
                     print(f"  Logits shape: {out.logits.shape}")
-                    # Get per-token losses
+
+                    # Get per-token losses with detailed alignment check
                     shift_logits = out.logits[:, :-1, :].contiguous()
                     shift_labels = new_labels[:, 1:].contiguous()
                     loss_fct = torch.nn.CrossEntropyLoss(reduction='none', ignore_index=-100)
@@ -2314,6 +2315,61 @@ def train_and_eval(
                         print(f"  Per-token losses (first 10): {valid_losses[:10].tolist()}")
                         print(f"  Mean per-token loss: {valid_losses.mean().item():.4f}")
                         print(f"  Max per-token loss: {valid_losses.max().item():.4f}")
+
+                    # DETAILED DEBUG: Show prediction alignment for first 3 sequences
+                    for seq_idx in range(min(3, new_input_ids.size(0))):
+                        print(f"\n[DEBUG DETAILED PREDICTION ALIGNMENT - Sequence {seq_idx}]")
+                        seq_ids = new_input_ids[seq_idx].cpu().tolist()
+                        seq_labels = new_labels[seq_idx].cpu().tolist()
+                        seq_logits = out.logits[seq_idx].cpu()
+
+                        # Show full sequence first
+                        print(f"  Full sequence (input_ids): {seq_ids}")
+                        print(f"  Full labels: {seq_labels}")
+                        print(f"  Full sequence decoded: {repr(frozen_tokenizer.decode(seq_ids, skip_special_tokens=False))}")
+
+                        print(f"\n  Position-by-position breakdown:")
+                        print(f"  {'Pos':<4} {'Input Token':<30} {'Target Token':<30} {'Top Pred':<30} {'Loss':<8}")
+                        print(f"  {'-'*4} {'-'*30} {'-'*30} {'-'*30} {'-'*8}")
+
+                        for pos in range(len(seq_ids) - 1):  # -1 because we predict next token
+                            input_id = seq_ids[pos]
+                            target_id = seq_labels[pos + 1]  # Shifted label
+
+                            if target_id == -100 or input_id == 0:  # Skip masked positions and padding
+                                continue
+
+                            # Decode tokens
+                            input_tok = frozen_tokenizer.decode([input_id], skip_special_tokens=False)
+                            target_tok = frozen_tokenizer.decode([target_id], skip_special_tokens=False)
+
+                            # Get model's top prediction
+                            logit_vec = seq_logits[pos]  # Logits at position `pos` predict position `pos+1`
+                            probs = torch.softmax(logit_vec, dim=-1)
+                            top5_probs, top5_ids = torch.topk(probs, 5)
+                            top_id = top5_ids[0].item()
+                            top_prob = top5_probs[0].item()
+                            top_tok = frozen_tokenizer.decode([top_id], skip_special_tokens=False)
+
+                            # Compute loss for this position
+                            pos_loss = torch.nn.functional.cross_entropy(
+                                logit_vec.unsqueeze(0),
+                                torch.tensor([target_id]),
+                                reduction='none'
+                            ).item()
+
+                            print(f"  {pos:<4} {repr(input_tok):<30} {repr(target_tok):<30} {repr(top_tok):<30} {pos_loss:<8.2f}")
+
+                            # Show top 5 predictions only for first sequence
+                            if seq_idx == 0:
+                                print(f"       Top 5 predictions:")
+                                for i in range(5):
+                                    pred_id = top5_ids[i].item()
+                                    pred_prob = top5_probs[i].item()
+                                    pred_tok = frozen_tokenizer.decode([pred_id], skip_special_tokens=False)
+                                    marker = " ✓" if pred_id == target_id else ""
+                                    print(f"         {i+1}. {repr(pred_tok):<20} (prob={pred_prob:.4f}){marker}")
+
                     debug_batch_count += 1
 
                 n_lab_tok = int((new_labels != -100).sum().item())
