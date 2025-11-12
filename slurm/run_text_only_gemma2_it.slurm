@@ -19,14 +19,38 @@
 # ============================================================================
 
 module purge
-source /data/lisik3/kgarci18/anaconda3/bin/activate seamless_env
 
+# Diagnostic information
+echo "Environment Setup:"
+echo "  Hostname: $(hostname)"
+echo "  GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
+echo "  CUDA Version: $(nvidia-smi | grep "CUDA Version" | awk '{print $9}')"
+
+# Activate conda environment
+echo "Activating conda environment..."
+source /data/lisik3/kgarci18/anaconda3/bin/activate seamless_env
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to activate conda environment"
+    exit 1
+fi
+
+echo "  Python: $(which python)"
+echo "  Python version: $(python --version)"
+
+# Set environment variables
 export HF_HOME=~/data_lisik3/kgarci18/hf_cache
 mkdir -p "$HF_HOME"
-export HF_TOKEN="$(cat ~/.hf_token)"
+export HF_TOKEN="$(cat ~/.hf_token 2>/dev/null || echo 'NO_TOKEN')"
 export TOKENIZERS_PARALLELISM=false
 export HF_HUB_ENABLE_HF_TRANSFER=0
 export HF_HUB_DISABLE_SYMLINKS_WARNING=1
+
+# Verify token
+if [ "$HF_TOKEN" = "NO_TOKEN" ]; then
+    echo "WARNING: No HuggingFace token found at ~/.hf_token"
+fi
+
+echo ""
 
 # Configuration
 MODEL_ID="google/gemma-2-2b-it"
@@ -55,6 +79,15 @@ echo "Epochs: $EPOCHS"
 echo "Learning rate: $LR"
 echo "Starting: $(date)"
 echo "============================================================================"
+
+# Verify script exists
+if [ ! -f "scripts/llm_finetuning/train_text_only_baseline.py" ]; then
+    echo "ERROR: Training script not found at scripts/llm_finetuning/train_text_only_baseline.py"
+    echo "Current directory: $(pwd)"
+    echo "Contents:"
+    ls -la scripts/llm_finetuning/
+    exit 1
+fi
 
 python scripts/llm_finetuning/train_text_only_baseline.py \
   --model-id "$MODEL_ID" \
