@@ -2745,11 +2745,11 @@ def main():
                     help="If no --val-id-list provided, take this fraction of train ids to form val.")
     # Ablation study arguments
     ap.add_argument("--train-ablation-mode", type=str, default="both",
-                    choices=["both", "global_only", "local_only", "none"],
-                    help="Which visual tokens to use during training: 'both' (default), 'global_only', 'local_only', or 'none'.")
+                    choices=["both", "global_only", "local_only", "none", "all_ablations"],
+                    help="Which visual tokens to use during training: 'both' (default), 'global_only', 'local_only', 'none', or 'all_ablations' (runs both/both, global/global, local/local separately).")
     ap.add_argument("--eval-ablations", type=str, nargs="+", default=["both", "frozen_baseline"],
-                    choices=["both", "global_only", "local_only", "none", "frozen_baseline"],
-                    help="List of ablation modes to evaluate (default: both frozen_baseline). 'frozen_baseline' loads a fresh pretrained model for fair text-only comparison.")
+                    choices=["both", "global_only", "local_only", "none", "frozen_baseline", "all_ablations"],
+                    help="List of ablation modes to evaluate (default: both frozen_baseline). 'frozen_baseline' loads a fresh pretrained model for fair text-only comparison. 'all_ablations' expands to [both, global_only, local_only, frozen_baseline].")
 
     args = ap.parse_args()
 
@@ -2757,6 +2757,56 @@ def main():
     print(f"[whoami] parent_dir={args.parent_dir}")
     print(f"[whoami] caption_nextword={getattr(args, 'caption_nextword', False)} col_transcript={args.col_transcript!r}")
 
+    # Handle "all_ablations" expansion for eval_ablations
+    eval_ablations = args.eval_ablations
+    if "all_ablations" in eval_ablations:
+        eval_ablations = ["both", "global_only", "local_only", "frozen_baseline"]
+        print(f"[all_ablations] Expanded eval_ablations to: {eval_ablations}")
+
+    # Handle "all_ablations" for train_ablation_mode
+    if args.train_ablation_mode == "all_ablations":
+        print(f"\n{'='*80}")
+        print("ALL ABLATIONS MODE: Running 3 separate training runs")
+        print(f"{'='*80}\n")
+
+        ablation_configs = [
+            ("both", ["both", "frozen_baseline"]),
+            ("global_only", ["global_only", "frozen_baseline"]),
+            ("local_only", ["local_only", "frozen_baseline"])
+        ]
+
+        for idx, (train_mode, eval_modes) in enumerate(ablation_configs, 1):
+            print(f"\n{'='*80}")
+            print(f"ABLATION RUN {idx}/3: train={train_mode}, eval={eval_modes}")
+            print(f"{'='*80}\n")
+
+            # Create subdirectory for this ablation run
+            ablation_output_dir = os.path.join(args.output_dir, f"ablation_{train_mode}")
+
+            train_and_eval(
+                parent_dir=args.parent_dir, output_dir=ablation_output_dir, seed=args.seed,
+                train_frac=args.train_frac, val_frac=args.val_frac, context_turns=args.context_turns,
+                visual_mode=args.visual_mode, max_locals=args.max_locals,
+                global_nframes=args.global_nframes, locals_topup=args.locals_topup, require_visuals=args.require_visuals,
+                lm_name=args.lm_name, dino_name=args.dino_name, dino_tune_mode=args.dino_tune_mode, dino_last_n=args.dino_last_n,
+                epochs=args.epochs, batch_size=args.batch_size, lr_proj=args.lr_proj, lr_dino=args.lr_dino, warmup_steps=args.warmup_steps,
+                dino_checkpoint=args.dino_checkpoint, dino_checkpoint_key=args.dino_checkpoint_key, dino_checkpoint_strict=args.dino_checkpoint_strict,
+                col_transcript=args.col_transcript, col_frames=args.col_frames, max_len=args.max_len, num_workers=args.num_workers,
+                fallback_split=args.fallback_split, split_k=args.split_k, split_sec=args.split_sec,
+                log_interval=args.log_interval, limit_train_steps=args.limit_train_steps, limit_val_steps=args.limit_val_steps,
+                dino_local_batch=args.dino_local_batch, dino_input_size=args.dino_input_size,
+                metrics_csv=args.metrics_csv, resume_path=args.resume, save_every_epochs=args.save_every_epochs,
+                save_adapter_only=args.save_adapter_only, grad_clip=args.grad_clip, align_eps=args.align_eps,
+                caption_nextword=args.caption_nextword, train_id_list=args.train_id_list, val_id_list=args.val_id_list, test_id_list=args.test_id_list, val_frac_of_train=args.val_frac_of_train,
+                train_ablation_mode=train_mode, eval_ablations=eval_modes
+            )
+
+        print(f"\n{'='*80}")
+        print("ALL ABLATIONS COMPLETE")
+        print(f"{'='*80}\n")
+        return  # Exit after running all ablations
+
+    # Normal single ablation run
     train_and_eval(
         parent_dir=args.parent_dir, output_dir=args.output_dir, seed=args.seed,
         train_frac=args.train_frac, val_frac=args.val_frac, context_turns=args.context_turns,
@@ -2772,7 +2822,7 @@ def main():
         metrics_csv=args.metrics_csv, resume_path=args.resume, save_every_epochs=args.save_every_epochs,
         save_adapter_only=args.save_adapter_only, grad_clip=args.grad_clip, align_eps=args.align_eps,
         caption_nextword=args.caption_nextword, train_id_list=args.train_id_list, val_id_list=args.val_id_list, test_id_list=args.test_id_list, val_frac_of_train=args.val_frac_of_train,
-        train_ablation_mode=args.train_ablation_mode, eval_ablations=args.eval_ablations
+        train_ablation_mode=args.train_ablation_mode, eval_ablations=eval_ablations
     )
 
 if __name__ == "__main__":
