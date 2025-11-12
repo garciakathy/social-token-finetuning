@@ -2008,15 +2008,33 @@ def train_and_eval(
                                             vecs.append(torch.from_numpy(v.astype(np.float32)))
                                 if vecs:
                                     l = torch.stack(vecs, dim=0)
+
                                     # Check for NaN/Inf in input embeddings - replace with zeros
                                     if torch.isnan(l).any() or torch.isinf(l).any():
                                         if rank == 0 and step < 5:
                                             print(f"[WARN step={step}] NaN/Inf in input embeddings batch {b}, using zeros")
                                         l = torch.zeros_like(l)
 
+                                    # CRITICAL: Clamp extreme values BEFORE normalization/projection
+                                    # Local embeddings can have very large values that cause projector to explode
+                                    if rank == 0 and step < 3:
+                                        l_min, l_max = l.min().item(), l.max().item()
+                                        l_mean, l_std = l.mean().item(), l.std().item()
+                                        print(f"[DEBUG step={step} batch={b}] Local embeddings BEFORE clamp: min={l_min:.2f}, max={l_max:.2f}, mean={l_mean:.4f}, std={l_std:.4f}")
+                                    l = torch.clamp(l, min=-100, max=100)
+                                    if rank == 0 and step < 3:
+                                        l_min, l_max = l.min().item(), l.max().item()
+                                        print(f"[DEBUG step={step} batch={b}] Local embeddings AFTER clamp: min={l_min:.2f}, max={l_max:.2f}")
+
                                     # L2 normalize local embeddings in local-only mode for stability
+                                    # This MUST happen after clamping but before dtype conversion
                                     if train_ablation_mode == "local_only":
-                                        l = torch.nn.functional.normalize(l, p=2, dim=-1)
+                                        l = torch.nn.functional.normalize(l, p=2, dim=-1, eps=1e-8)
+                                        # After normalization, check again for any NaN that might have appeared
+                                        if torch.isnan(l).any() or torch.isinf(l).any():
+                                            if rank == 0 and step < 5:
+                                                print(f"[WARN step={step}] NaN after normalization batch {b}, using zeros")
+                                            l = torch.zeros_like(l)
 
                                     l = to_pdtype(l, projector)
 
