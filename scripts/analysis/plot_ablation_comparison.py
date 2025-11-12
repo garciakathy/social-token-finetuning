@@ -9,11 +9,11 @@ import numpy as np
 from pathlib import Path
 
 # Define paths to metrics files
-RESULTS_DIR = Path(__file__).parent.parent.parent / "data" / "results"
+RESULTS_DIR = Path(__file__).parent.parent.parent / "data" / "results" / "perplexity"
 METRICS_FILES = {
-    "Both Tokens": RESULTS_DIR / "metrics_both.csv",
-    "Global Only": RESULTS_DIR / "metrics_global_only.csv",
-    "Local Only": RESULTS_DIR / "metrics_local_only.csv",
+    "All Visual Tokens": RESULTS_DIR / "metrics_both.csv",
+    "Global Token": RESULTS_DIR / "metrics_global_only.csv",
+    "Local Tokens": RESULTS_DIR / "metrics_local_only.csv",
     #"Gemma Baseline (No Training)": Path(__file__).parent.parent.parent / "data" / "metrics_base.csv"
 }
 
@@ -83,7 +83,7 @@ def main():
             print(f"{name}: File not found - {path}")
 
     # Also get no-visual baseline from both tokens run
-    both_path = METRICS_FILES["Both Tokens"]
+    both_path = METRICS_FILES["All Visual Tokens"]
     if both_path.exists():
         baseline_ppl = extract_baseline_perplexity(both_path)
         if baseline_ppl:
@@ -91,9 +91,9 @@ def main():
             print(f"Frozen Gemma (Baseline): {baseline_ppl:.4f}")
 
     # Hardcode Local Only if not found
-    if "Local Only" not in results:
-        results["Local Only"] = 17.49
-        print(f"Local Only: 17.49 (hardcoded)")
+    if "Local Tokens" not in results:
+        results["Local Tokens"] = 17.49
+        print(f"Local Tokens: 17.49 (hardcoded)")
 
     # Add text-only fine-tuned Gemma baseline
     results["Gemma Text-Only Fine-tuned"] = 24.21
@@ -125,24 +125,26 @@ def main():
 
     # Formatting
     ax.set_xlabel('Ablation Mode', fontsize=14, fontweight='bold')
-    ax.set_ylabel('Test Perplexity (lower is better)', fontsize=14, fontweight='bold')
-    ax.set_title('Social Token Ablation Study Results\nTest Set Perplexity Comparison',
+    ax.set_ylabel('Test Perplexity', fontsize=14, fontweight='bold')
+    ax.set_title('Test Set Perplexity Comparison',
                  fontsize=16, fontweight='bold', pad=20)
     ax.set_xticks(range(len(ablations)))
-    ax.set_xticklabels(ablations, rotation=15, ha='right', fontsize=11)
+    # Add newlines to labels for better readability
+    wrapped_labels = [label.replace(' ', '\n') for label in ablations]
+    ax.set_xticklabels(wrapped_labels, rotation=0, ha='center', fontsize=11)
     ax.grid(axis='y', alpha=0.3, linestyle='--')
     ax.set_axisbelow(True)
 
     # Set y-axis to log scale if baseline is very high
     if max(perplexities) / min(perplexities) > 100:
         ax.set_yscale('log')
-        ax.set_ylabel('Test Perplexity (log scale, lower is better)',
+        ax.set_ylabel('Test Perplexity (log scale)',
                       fontsize=14, fontweight='bold')
 
     plt.tight_layout()
 
     # Save figure
-    output_path = Path(__file__).parent.parent.parent / "data" / "ablation_comparison.png"
+    output_path = RESULTS_DIR / "ablation_comparison.png"
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     print(f"\nPlot saved to: {output_path}")
 
@@ -163,24 +165,24 @@ def main():
         print(f"{rank}. {name:30s} → Perplexity: {ppl:8.4f}")
 
     # Calculate improvements
-    if "Both Tokens" in results and "Gemma Text-Only Fine-tuned" in results:
-        improvement = ((results["Gemma Text-Only Fine-tuned"] - results["Both Tokens"]) /
+    if "All Visual Tokens" in results and "Gemma (Text-Only Fine-tuned)" in results:
+        improvement = ((results["Gemma (Text-Only Fine-tuned)"] - results["All Visual Tokens"]) /
                       results["Gemma Text-Only Fine-tuned"]) * 100
         print(f"\nVisual tokens improvement (Both vs Text-Only Fine-tuned): {improvement:.1f}%")
 
-    if "Both Tokens" in results and "Frozen Gemma (Baseline)" in results:
-        improvement = ((results["Frozen Gemma (Baseline)"] - results["Both Tokens"]) /
-                      results["Frozen Gemma (Baseline)"]) * 100
+    if "All Visual Tokens" in results and "Gemma (Frozen Baseline)" in results:
+        improvement = ((results["Gemma (Frozen Baseline)"] - results["All Visual Tokens"]) /
+                      results["Gemma (Frozen Baseline)"]) * 100
         print(f"Overall improvement (Both vs Frozen Gemma): {improvement:.1f}%")
 
-    if "Both Tokens" in results and "Global Only" in results:
-        local_contrib = ((results["Global Only"] - results["Both Tokens"]) /
-                        results["Global Only"]) * 100
+    if "All Visual Tokens" in results and "Global Token" in results:
+        local_contrib = ((results["Global Token"] - results["All Visual Tokens"]) /
+                        results["Global Token"]) * 100
         print(f"Local tokens contribution: {local_contrib:.1f}% reduction in perplexity")
 
-    if "Both Tokens" in results and "Local Only" in results:
-        global_contrib = ((results["Local Only"] - results["Both Tokens"]) /
-                         results["Local Only"]) * 100
+    if "All Visual Tokens" in results and "Local Tokens" in results:
+        global_contrib = ((results["Local Tokens"] - results["All Visual Tokens"]) /
+                         results["Local Tokens"]) * 100
         print(f"Global tokens contribution: {global_contrib:.1f}% reduction in perplexity")
 
     print("="*60)
