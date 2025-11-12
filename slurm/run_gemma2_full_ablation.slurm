@@ -1,7 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=gemma2_full_abl
 #SBATCH --output=logs/gemma2_full_abl_%j.out
-#SBATCH --error=logs/gemma2_full_abl_%j.err
 #SBATCH --nodes=1
 #SBATCH --partition=a100
 #SBATCH --account=lisik3_gpu

@@ -93,7 +93,9 @@ def init_distributed():
     if "WORLD_SIZE" in os.environ and int(os.environ["WORLD_SIZE"]) > 1:
         rank = int(os.environ["RANK"]); local_rank = int(os.environ["LOCAL_RANK"]); world = int(os.environ["WORLD_SIZE"])
         torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend="nccl", init_method="env://")
+        # Only initialize if not already initialized (for multiple train_and_eval calls)
+        if not dist.is_initialized():
+            dist.init_process_group(backend="nccl", init_method="env://")
         return True, rank, local_rank, world, torch.device(f"cuda:{local_rank}")
     return False, 0, 0, 1, torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -2803,11 +2805,9 @@ def main():
 
             # Cleanup between runs (except after the last run)
             if idx < len(ablation_configs):
-                print(f"\n[Cleanup] Destroying process group and clearing CUDA cache before next run...")
-                # Destroy distributed process group if it was initialized
-                if dist.is_initialized():
-                    dist.destroy_process_group()
+                print(f"\n[Cleanup] Clearing CUDA cache before next run...")
                 # Clear CUDA cache to free up memory
+                # NOTE: Do NOT destroy process group - it will be reused for the next run
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                     torch.cuda.synchronize()
