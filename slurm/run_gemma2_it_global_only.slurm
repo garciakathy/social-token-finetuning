@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=gemma2_it_both
-#SBATCH --output=logs/gemma2_it_both_%j.out
-#SBATCH --error=logs/gemma2_it_both_%j.err
+#SBATCH --job-name=gemma2_it_global
+#SBATCH --output=logs/gemma2_it_global_%j.out
+#SBATCH --error=logs/gemma2_it_global_%j.err
 #SBATCH --nodes=1
 #SBATCH --partition=a100
 #SBATCH --account=lisik3_gpu
@@ -11,14 +11,12 @@
 #SBATCH --time=48:00:00
 
 # ============================================================================
-# BOTH TOKENS TRAINING - Gemma-2-2B-IT (Instruction-Tuned Model)
+# GLOBAL-ONLY ABLATION TRAINING - Gemma-2-2B-IT (Instruction-Tuned Model)
 # ============================================================================
-# This script trains with BOTH global and local social tokens (<SOC_G> + <SOC_L>).
-# Compares full model performance against frozen baseline.
+# This script trains with ONLY global social token (<SOC_G>), no local tokens.
+# Compares global-only performance against frozen baseline.
 #
-# Ablation: both (global + local tokens)
-# Fix date: 2025-11-09
-# See: FROZEN_BASELINE_FINAL.md for baseline details
+# Ablation: global_only
 # ============================================================================
 
 # --- Environment Setup ---
@@ -38,7 +36,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
 # --- Paths ---
 PARENT_DIR="$HOME/data/seamless/outputs/social_tokens_fixed"
-OUT_DIR="$HOME/data/seamless/outputs/nextutt_runs/run_gemma2_it_both_tokens_$(date +%Y%m%d_%H%M%S)"
+OUT_DIR="$HOME/data/seamless/outputs/nextutt_runs/run_gemma2_it_global_only_$(date +%Y%m%d_%H%M%S)"
 DINO_CKPT="/home/kgarci18/data_lisik3/kgarci18/seamless/outputs/dino_run_20250816_134333/best_dino_vit_base_patch14_dinov2.pt"
 
 # --- Model Settings ---
@@ -56,11 +54,11 @@ WARMUP=888
 mkdir -p "$(dirname "$OUT_DIR")" logs
 
 echo "============================================================================"
-echo "ABLATION TRAINING: BOTH GLOBAL AND LOCAL TOKENS (IT MODEL)"
+echo "ABLATION TRAINING: GLOBAL-ONLY SOCIAL TOKEN (IT MODEL)"
 echo "============================================================================"
 echo "Model: $LM_NAME"
 echo "Output: $OUT_DIR"
-echo "Ablation: Using both <SOC_G> and <SOC_L> tokens"
+echo "Ablation: Using only <SOC_G> token (no local tokens)"
 echo "Starting: $(date)"
 echo "============================================================================"
 
@@ -90,8 +88,8 @@ torchrun --nproc_per_node=4 scripts/llm_finetuning/next_utt_social_ooo_fix.py \
   --train-id-list "/home/kgarci18/data_lisik3/kgarci18/ooo/train_ids.txt" \
   --test-id-list "/home/kgarci18/data_lisik3/kgarci18/ooo/test_ids.txt" \
   --val-frac-of-train 0.2 \
-  --train-ablation-mode both \
-  --eval-ablations both frozen_baseline
+  --train-ablation-mode global_only \
+  --eval-ablations global_only frozen_baseline
 
 EXIT_CODE=$?
 
@@ -105,10 +103,10 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo "SUCCESS! Check results at: $OUT_DIR/logs/"
     echo ""
     echo "Verification checklist:"
-    echo "1. Check examples_both.json - should have BOTH <SOC_G> and <SOC_L>"
+    echo "1. Check examples_global_only.json - should have <SOC_G> but NOT <SOC_L>"
     echo "2. Check examples_frozen_baseline.json - should have NO social tokens"
-    echo "3. Check metrics.csv - compare test_ppl_both vs test_ppl_frozen_baseline"
-    echo "4. 'Both' should have the best performance (lowest perplexity)"
+    echo "3. Check metrics.csv - compare test_ppl_global_only vs test_ppl_frozen_baseline"
+    echo "4. Global-only should be worse than 'both' but better than frozen baseline"
 else
     echo "FAILED! Check error logs for details."
 fi
