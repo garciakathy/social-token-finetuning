@@ -2033,10 +2033,10 @@ def train_and_eval(
                                             print(f"[WARN step={step}] Projector produces NaN for batch {b}, using zero fallback")
                                         # Get correct output dimension from LLM config
                                         H = gemma.lm.config.hidden_size
-                                        # Match the projector's output dtype (float32 since projector is in float32)
-                                        zero_emb = torch.zeros(l.size(0), H, device=device, dtype=torch.float32)
-                                        # Make it a parameter so it has requires_grad=True
-                                        proj_l_list[b] = nn.Parameter(zero_emb, requires_grad=True).to(device)
+                                        # Create zero tensor with requires_grad for backprop compatibility
+                                        # Note: Don't use nn.Parameter here as it breaks the computational graph
+                                        zero_emb = torch.zeros(l.size(0), H, device=device, dtype=torch.float32, requires_grad=True)
+                                        proj_l_list[b] = zero_emb
                                         if rank == 0 and step <= 2:
                                             print(f"[DEBUG] Batch {b}: Created zero fallback with shape {proj_l_list[b].shape}")
                                     else:
