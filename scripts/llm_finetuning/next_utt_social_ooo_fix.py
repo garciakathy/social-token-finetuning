@@ -2801,6 +2801,18 @@ def main():
                 train_ablation_mode=train_mode, eval_ablations=eval_modes
             )
 
+            # Cleanup between runs (except after the last run)
+            if idx < len(ablation_configs):
+                print(f"\n[Cleanup] Destroying process group and clearing CUDA cache before next run...")
+                # Destroy distributed process group if it was initialized
+                if dist.is_initialized():
+                    dist.destroy_process_group()
+                # Clear CUDA cache to free up memory
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                print(f"[Cleanup] Complete\n")
+
         print(f"\n{'='*80}")
         print("ALL ABLATIONS COMPLETE")
         print(f"{'='*80}\n")
