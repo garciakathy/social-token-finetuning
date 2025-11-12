@@ -321,6 +321,70 @@ class GemmaWithInjection(nn.Module):
 
         return new_input_ids, new_attention_mask, new_labels
 
+    def _strip_global_tokens(self, input_ids, attention_mask, labels):
+        """
+        Remove only global social token (<SOC_G>) from input_ids, attention_mask, and labels.
+        Keep local tokens (<SOC_L>). Used for local_only ablation.
+        Returns new tensors with global tokens removed.
+        """
+        B, T = input_ids.shape
+        device = input_ids.device
+
+        # Create mask of positions to keep (not global token)
+        keep_mask = (input_ids != self.id_soc_g)  # [B, T]
+
+        # Find the new max sequence length after removal
+        new_lengths = keep_mask.sum(dim=1)  # [B]
+        max_new_len = new_lengths.max().item()
+
+        # Initialize new tensors
+        new_input_ids = torch.full((B, max_new_len), self.tokenizer.pad_token_id, dtype=input_ids.dtype, device=device)
+        new_attention_mask = torch.zeros((B, max_new_len), dtype=attention_mask.dtype, device=device)
+        new_labels = torch.full((B, max_new_len), -100, dtype=labels.dtype, device=device)
+
+        # Fill in the kept positions for each batch element
+        for b in range(B):
+            kept_positions = keep_mask[b].nonzero(as_tuple=False).squeeze(-1)
+            n_kept = kept_positions.size(0)
+            if n_kept > 0:
+                new_input_ids[b, :n_kept] = input_ids[b, kept_positions]
+                new_attention_mask[b, :n_kept] = attention_mask[b, kept_positions]
+                new_labels[b, :n_kept] = labels[b, kept_positions]
+
+        return new_input_ids, new_attention_mask, new_labels
+
+    def _strip_local_tokens(self, input_ids, attention_mask, labels):
+        """
+        Remove only local social tokens (<SOC_L>) from input_ids, attention_mask, and labels.
+        Keep global token (<SOC_G>). Used for global_only ablation.
+        Returns new tensors with local tokens removed.
+        """
+        B, T = input_ids.shape
+        device = input_ids.device
+
+        # Create mask of positions to keep (not local tokens)
+        keep_mask = (input_ids != self.id_soc_l)  # [B, T]
+
+        # Find the new max sequence length after removal
+        new_lengths = keep_mask.sum(dim=1)  # [B]
+        max_new_len = new_lengths.max().item()
+
+        # Initialize new tensors
+        new_input_ids = torch.full((B, max_new_len), self.tokenizer.pad_token_id, dtype=input_ids.dtype, device=device)
+        new_attention_mask = torch.zeros((B, max_new_len), dtype=attention_mask.dtype, device=device)
+        new_labels = torch.full((B, max_new_len), -100, dtype=labels.dtype, device=device)
+
+        # Fill in the kept positions for each batch element
+        for b in range(B):
+            kept_positions = keep_mask[b].nonzero(as_tuple=False).squeeze(-1)
+            n_kept = kept_positions.size(0)
+            if n_kept > 0:
+                new_input_ids[b, :n_kept] = input_ids[b, kept_positions]
+                new_attention_mask[b, :n_kept] = attention_mask[b, kept_positions]
+                new_labels[b, :n_kept] = labels[b, kept_positions]
+
+        return new_input_ids, new_attention_mask, new_labels
+
     def forward(self, input_ids, attention_mask, labels, proj_global, proj_locals, inject_visuals=True, ablation_mode="both"):
         """
         ablation_mode: 'both', 'global_only', 'local_only', 'none', 'frozen_baseline'
@@ -333,6 +397,16 @@ class GemmaWithInjection(nn.Module):
         if ablation_mode in ("none", "frozen_baseline"):
             input_ids, attention_mask, labels = self._strip_social_tokens(input_ids, attention_mask, labels)
 
+        # For local_only ablation, remove global tokens but keep local tokens
+        # This tests contribution of local visual tokens without global context
+        elif ablation_mode == "local_only":
+            input_ids, attention_mask, labels = self._strip_global_tokens(input_ids, attention_mask, labels)
+
+        # For global_only ablation, remove local tokens but keep global token
+        # This tests contribution of global visual token without local details
+        elif ablation_mode == "global_only":
+            input_ids, attention_mask, labels = self._strip_local_tokens(input_ids, attention_mask, labels)
+
         emb = self.lm.get_input_embeddings()(input_ids)  # [B,T,H]
         if inject_visuals:
             dtype = emb.dtype
@@ -342,9 +416,8 @@ class GemmaWithInjection(nn.Module):
                 if pos_g.numel() > 0:
                     b = pos_g[:, 0]; t = pos_g[:, 1]
                     emb[b, t, :] = proj_global[b, :].to(dtype=dtype)
-            # NOTE: In local_only mode, we intentionally do NOT inject or modify the global token.
-            # The <SOC_G> token position will keep its original text embedding.
-            # This allows the model to use text context while only injecting local visual tokens.
+            # NOTE: In local_only mode, global tokens have been removed from input_ids entirely (line 403).
+            # So this injection code will find no global token positions and inject nothing.
             # Local token injection
             if ablation_mode in ("both", "local_only") and proj_locals is not None:
                 B = input_ids.size(0)
@@ -353,9 +426,8 @@ class GemmaWithInjection(nn.Module):
                     if lpos.numel() > 0 and proj_locals[b] is not None:
                         L = min(lpos.numel(), proj_locals[b].size(0))
                         emb[b, lpos[:L], :] = proj_locals[b][:L, :].to(dtype=dtype)
-            # NOTE: In global_only mode, we intentionally do NOT inject or modify local tokens.
-            # The <SOC_L> token positions will keep their original text embeddings.
-            # This allows the model to use text context while only injecting the global visual token.
+            # NOTE: In global_only mode, local tokens have been removed from input_ids entirely (line 408).
+            # So this injection code will find no local token positions and inject nothing.
         out = self.lm(inputs_embeds=emb, attention_mask=attention_mask, labels=labels)
         return out
 
