@@ -218,15 +218,29 @@ class DINOEncoder(nn.Module):
 
 # ---------------------- Projection & LM ----------------------
 class ScaleShift(nn.Module):
-    def __init__(self, dim, init_scale=1.0):
+    """RMS normalization with improved numerical stability for local-only mode."""
+    def __init__(self, dim, init_scale=1.0, eps=1e-5):
         super().__init__()
         self.g = nn.Parameter(torch.full((dim,), float(init_scale)))
         self.b = nn.Parameter(torch.zeros(dim))
+        self.eps = eps  # Larger epsilon for stability
+
     def forward(self, x):
-        eps = 1e-6
-        rms = x.pow(2).mean(dim=-1, keepdim=True).add(eps).sqrt()
+        # Clamp input to prevent extreme values
+        x = torch.clamp(x, min=-10, max=10)
+
+        # RMS normalization with larger epsilon
+        rms = x.pow(2).mean(dim=-1, keepdim=True).add(self.eps).sqrt()
+
+        # Clamp RMS to prevent division by very small numbers
+        rms = torch.clamp(rms, min=self.eps)
+
         x = x / rms
-        return x * self.g + self.b
+
+        # Constrain scale parameter to prevent explosion
+        g_clamped = torch.clamp(self.g, min=-10, max=10)
+
+        return x * g_clamped + self.b
 
 class VisualProjector(nn.Module):
     def __init__(self, in_dim: int, out_dim: int,
@@ -2000,6 +2014,10 @@ def train_and_eval(
                                             print(f"[WARN step={step}] NaN/Inf in input embeddings batch {b}, using zeros")
                                         l = torch.zeros_like(l)
 
+                                    # L2 normalize local embeddings in local-only mode for stability
+                                    if train_ablation_mode == "local_only":
+                                        l = torch.nn.functional.normalize(l, p=2, dim=-1)
+
                                     l = to_pdtype(l, projector)
 
                                     with torch.no_grad():
@@ -2056,6 +2074,15 @@ def train_and_eval(
                     torch.nn.utils.clip_grad_norm_(projector.parameters(), grad_clip)
                     if any(p.requires_grad for p in dino.parameters()):
                         torch.nn.utils.clip_grad_norm_(dino.parameters(), grad_clip)
+
+                # Extra gradient clipping for local-only mode to prevent NaN
+                # Local embeddings can cause projector gradient explosion
+                if train_ablation_mode == "local_only":
+                    if is_dist and isinstance(projector, DDP):
+                        torch.nn.utils.clip_grad_norm_(projector.module.parameters(), max_norm=1.0)
+                    else:
+                        torch.nn.utils.clip_grad_norm_(projector.parameters(), max_norm=1.0)
+
                 opt.step(); sched.step()
 
             n_lab_tok = int((labels != -100).sum().item())
