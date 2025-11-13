@@ -1294,7 +1294,9 @@ def generate_examples(
     inject_visuals: bool = True,
     ablation_mode: str = "both",
     rank: int = 0,
-    select_mode: str = "first"
+    select_mode: str = "first",
+    debug_generation: bool = False,
+    debug_n_examples: int = 3
 ):
     """
     Generate text predictions for examples to compare with ground truth.
@@ -1306,6 +1308,8 @@ def generate_examples(
             - "best": Return num_examples with lowest PPL (requires full pass)
             - "worst": Return num_examples with highest PPL (requires full pass)
             - "best_and_worst": Return best and worst examples (num_examples split evenly)
+        debug_generation: If True, print detailed generation diagnostics
+        debug_n_examples: Number of examples to debug in detail (default: 3)
     """
     if rank != 0:
         return []  # Only generate on rank 0
@@ -1443,7 +1447,20 @@ def generate_examples(
                 generated_ids = prompt_ids.clone()
                 gen_attn_mask = prompt_attn.clone()
 
-                for _ in range(max_new_tokens):
+                # Debug tracking
+                debug_this_example = debug_generation and len(examples) < debug_n_examples
+                if debug_this_example:
+                    print(f"\n{'='*80}")
+                    print(f"DEBUG GENERATION - Example {len(examples) + 1}")
+                    print(f"{'='*80}")
+                    print(f"Prompt: {prompt_text}")
+                    print(f"Ground truth: {ground_truth}")
+                    print(f"Ablation mode: {ablation_mode}")
+                    print(f"Inject visuals: {inject_visuals}")
+                    print(f"\nGeneration steps:")
+
+                generation_steps = []
+                for step in range(max_new_tokens):
                     # Build embeddings with visual tokens
                     emb = gemma_model.lm.get_input_embeddings()(generated_ids)
 
@@ -1464,8 +1481,39 @@ def generate_examples(
                                 emb[0, lpos[:L], :] = gen_proj_l[0][:L, :].to(dtype=emb.dtype)
 
                     # Forward pass
-                    outputs = gemma_model.lm(inputs_embeds=emb, attention_mask=gen_attn_mask)
+                    outputs = gemma_model.lm(inputs_embeds=emb, attention_mask=gen_attn_mask, output_attentions=debug_this_example)
                     next_token_logits = outputs.logits[0, -1, :]
+
+                    # Debug: Analyze logits
+                    if debug_this_example:
+                        probs = torch.softmax(next_token_logits, dim=-1)
+                        entropy = -(probs * torch.log(probs + 1e-10)).sum().item()
+
+                        # Get top-k predictions
+                        top_k = 10
+                        top_probs, top_indices = torch.topk(probs, k=top_k)
+                        top_tokens = [tokenizer.decode([idx]) for idx in top_indices]
+
+                        # Detect repetition
+                        recent_tokens = generated_ids[0, -5:].tolist() if generated_ids.size(1) >= 5 else []
+
+                        print(f"\n  Step {step + 1}:")
+                        print(f"    Current sequence length: {generated_ids.size(1)}")
+                        print(f"    Entropy: {entropy:.4f} (higher = more uncertain)")
+                        print(f"    Max prob: {top_probs[0].item():.4f}")
+                        print(f"    Top 10 predictions:")
+                        for i, (token, prob) in enumerate(zip(top_tokens, top_probs)):
+                            marker = " <- SELECTED" if i == 0 else ""
+                            print(f"      {i+1}. '{token}' (p={prob.item():.4f}){marker}")
+
+                        if len(recent_tokens) >= 2:
+                            print(f"    Recent tokens: {[tokenizer.decode([t]) for t in recent_tokens]}")
+
+                        # Check if we're about to generate a repetition
+                        predicted_token_id = top_indices[0].item()
+                        if len(recent_tokens) >= 2 and predicted_token_id in recent_tokens[-2:]:
+                            print(f"    ⚠️  WARNING: Repetition detected!")
+
                     next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
 
                     # Stop on EOS or pad
@@ -1478,6 +1526,14 @@ def generate_examples(
 
                 # Decode generated text (only the new tokens)
                 generated_text = tokenizer.decode(generated_ids[0, first_target_pos:], skip_special_tokens=True)
+
+                # Debug summary
+                if debug_this_example:
+                    print(f"\n  Final generated text: '{generated_text}'")
+                    print(f"  Ground truth: '{ground_truth}'")
+                    print(f"  Total steps: {step + 1}")
+                    print(f"  Match: {generated_text.strip() == ground_truth.strip()}")
+                    print(f"{'='*80}\n")
 
                 # Calculate per-example PPL by computing loss on ground truth
                 with torch.no_grad():
@@ -1833,7 +1889,9 @@ def train_and_eval(
     train_id_list: str, val_id_list: str, test_id_list: str, val_frac_of_train: float,
     train_ablation_mode: str,
     eval_ablations: List[str],
-    example_select_mode: str = "first"
+    example_select_mode: str = "first",
+    debug_generation: bool = False,
+    debug_n_examples: int = 3
 ):
     is_dist, rank, local_rank, world, device = init_distributed()
     if rank == 0: print(f"[DDP] is_dist={is_dist} world={world} device={device}")
@@ -2779,7 +2837,9 @@ def train_and_eval(
                     inject_visuals=inject,
                     ablation_mode=abl_mode,
                     rank=rank,
-                    select_mode=example_select_mode
+                    select_mode=example_select_mode,
+                    debug_generation=debug_generation,
+                    debug_n_examples=debug_n_examples
                 )
             all_examples[abl_mode] = examples
 
@@ -2892,6 +2952,10 @@ def main():
     ap.add_argument("--example-select-mode", type=str, default="first",
                     choices=["first", "best", "worst", "best_and_worst"],
                     help="How to select generation examples: 'first' (default, first 20 encountered), 'best' (20 with lowest PPL), 'worst' (20 with highest PPL), 'best_and_worst' (10 best + 10 worst).")
+    ap.add_argument("--debug-generation", action="store_true",
+                    help="Enable detailed generation debugging (shows top-k predictions, entropy, repetition detection for first 3 examples)")
+    ap.add_argument("--debug-n-examples", type=int, default=3,
+                    help="Number of examples to debug in detail (default: 3)")
 
     args = ap.parse_args()
 
@@ -2932,7 +2996,8 @@ def main():
         save_adapter_only=args.save_adapter_only, grad_clip=args.grad_clip, align_eps=args.align_eps,
         caption_nextword=args.caption_nextword, train_id_list=args.train_id_list, val_id_list=args.val_id_list, test_id_list=args.test_id_list, val_frac_of_train=args.val_frac_of_train,
         train_ablation_mode=args.train_ablation_mode, eval_ablations=eval_ablations,
-        example_select_mode=args.example_select_mode
+        example_select_mode=args.example_select_mode,
+        debug_generation=args.debug_generation, debug_n_examples=args.debug_n_examples
     )
 
 if __name__ == "__main__":
