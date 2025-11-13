@@ -25,7 +25,7 @@ Previous behavior: kept social token text but didn't inject visual embeddings (b
 New behavior: removes social token text entirely (clean text-only baseline).
 """
 
-import os, re, math, json, argparse, time, csv, pickle, sys, random
+import os, re, math, json, argparse, time, csv, pickle, sys, random, subprocess
 from glob import glob
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -93,9 +93,7 @@ def init_distributed():
     if "WORLD_SIZE" in os.environ and int(os.environ["WORLD_SIZE"]) > 1:
         rank = int(os.environ["RANK"]); local_rank = int(os.environ["LOCAL_RANK"]); world = int(os.environ["WORLD_SIZE"])
         torch.cuda.set_device(local_rank)
-        # Only initialize if not already initialized (for multiple train_and_eval calls)
-        if not dist.is_initialized():
-            dist.init_process_group(backend="nccl", init_method="env://")
+        dist.init_process_group(backend="nccl", init_method="env://")
         return True, rank, local_rank, world, torch.device(f"cuda:{local_rank}")
     return False, 0, 0, 1, torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -2768,7 +2766,7 @@ def main():
     # Handle "all_ablations" for train_ablation_mode
     if args.train_ablation_mode == "all_ablations":
         print(f"\n{'='*80}")
-        print("ALL ABLATIONS MODE: Running 3 separate training runs")
+        print("ALL ABLATIONS MODE: Running 3 separate training runs in subprocesses")
         print(f"{'='*80}\n")
 
         ablation_configs = [
@@ -2776,6 +2774,50 @@ def main():
             ("global_only", ["global_only", "frozen_baseline"]),
             ("local_only", ["local_only", "frozen_baseline"])
         ]
+
+        # Build base command arguments from current args (excluding train-ablation-mode)
+        script_path = os.path.abspath(__file__)
+
+        # Determine if we're running under torchrun by checking for RANK env var
+        is_distributed = "RANK" in os.environ and "WORLD_SIZE" in os.environ
+
+        # Build common arguments
+        common_args = [
+            "--parent-dir", args.parent_dir,
+            "--col-transcript", args.col_transcript,
+            "--visual-mode", args.visual_mode,
+            "--train-frac", str(args.train_frac),
+            "--val-frac", str(args.val_frac),
+            "--epochs", str(args.epochs),
+            "--batch-size", str(args.batch_size),
+            "--lm-name", args.lm_name,
+            "--dino-name", args.dino_name,
+            "--dino-tune-mode", args.dino_tune_mode,
+            "--lr-proj", str(args.lr_proj),
+            "--lr-dino", str(args.lr_dino),
+            "--warmup-steps", str(args.warmup_steps),
+            "--log-interval", str(args.log_interval),
+            "--save-every-epochs", str(args.save_every_epochs),
+            "--dino-local-batch", str(args.dino_local_batch),
+        ]
+
+        # Add optional arguments
+        if args.dino_checkpoint:
+            common_args.extend(["--dino-checkpoint", args.dino_checkpoint])
+        if args.dino_checkpoint_key:
+            common_args.extend(["--dino-checkpoint-key", args.dino_checkpoint_key])
+        if args.caption_nextword:
+            common_args.append("--caption-nextword")
+        if args.save_adapter_only:
+            common_args.append("--save-adapter-only")
+        if args.train_id_list:
+            common_args.extend(["--train-id-list", args.train_id_list])
+        if args.test_id_list:
+            common_args.extend(["--test-id-list", args.test_id_list])
+        if args.val_id_list:
+            common_args.extend(["--val-id-list", args.val_id_list])
+        if args.val_frac_of_train:
+            common_args.extend(["--val-frac-of-train", str(args.val_frac_of_train)])
 
         for idx, (train_mode, eval_modes) in enumerate(ablation_configs, 1):
             print(f"\n{'='*80}")
@@ -2785,33 +2827,35 @@ def main():
             # Create subdirectory for this ablation run
             ablation_output_dir = os.path.join(args.output_dir, f"ablation_{train_mode}")
 
-            train_and_eval(
-                parent_dir=args.parent_dir, output_dir=ablation_output_dir, seed=args.seed,
-                train_frac=args.train_frac, val_frac=args.val_frac, context_turns=args.context_turns,
-                visual_mode=args.visual_mode, max_locals=args.max_locals,
-                global_nframes=args.global_nframes, locals_topup=args.locals_topup, require_visuals=args.require_visuals,
-                lm_name=args.lm_name, dino_name=args.dino_name, dino_tune_mode=args.dino_tune_mode, dino_last_n=args.dino_last_n,
-                epochs=args.epochs, batch_size=args.batch_size, lr_proj=args.lr_proj, lr_dino=args.lr_dino, warmup_steps=args.warmup_steps,
-                dino_checkpoint=args.dino_checkpoint, dino_checkpoint_key=args.dino_checkpoint_key, dino_checkpoint_strict=args.dino_checkpoint_strict,
-                col_transcript=args.col_transcript, col_frames=args.col_frames, max_len=args.max_len, num_workers=args.num_workers,
-                fallback_split=args.fallback_split, split_k=args.split_k, split_sec=args.split_sec,
-                log_interval=args.log_interval, limit_train_steps=args.limit_train_steps, limit_val_steps=args.limit_val_steps,
-                dino_local_batch=args.dino_local_batch, dino_input_size=args.dino_input_size,
-                metrics_csv=args.metrics_csv, resume_path=args.resume, save_every_epochs=args.save_every_epochs,
-                save_adapter_only=args.save_adapter_only, grad_clip=args.grad_clip, align_eps=args.align_eps,
-                caption_nextword=args.caption_nextword, train_id_list=args.train_id_list, val_id_list=args.val_id_list, test_id_list=args.test_id_list, val_frac_of_train=args.val_frac_of_train,
-                train_ablation_mode=train_mode, eval_ablations=eval_modes
-            )
+            # Build command for this specific ablation
+            run_args = common_args + [
+                "--output-dir", ablation_output_dir,
+                "--train-ablation-mode", train_mode,
+                "--eval-ablations"
+            ] + eval_modes
 
-            # Cleanup between runs (except after the last run)
-            if idx < len(ablation_configs):
-                print(f"\n[Cleanup] Clearing CUDA cache before next run...")
-                # Clear CUDA cache to free up memory
-                # NOTE: Do NOT destroy process group - it will be reused for the next run
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-                print(f"[Cleanup] Complete\n")
+            if is_distributed:
+                # Running under torchrun - need to spawn torchrun subprocess
+                nproc = os.environ.get("WORLD_SIZE", "1")
+                cmd = ["torchrun", f"--nproc_per_node={nproc}", script_path] + run_args
+            else:
+                # Running without torchrun - direct python subprocess
+                cmd = [sys.executable, script_path] + run_args
+
+            print(f"[Subprocess] Command: {' '.join(cmd)}\n")
+
+            # Run subprocess and wait for completion
+            result = subprocess.run(cmd, env=os.environ.copy())
+
+            if result.returncode != 0:
+                print(f"\n{'='*80}")
+                print(f"ERROR: Ablation run {idx}/3 (train={train_mode}) FAILED with exit code {result.returncode}")
+                print(f"{'='*80}\n")
+                sys.exit(result.returncode)
+
+            print(f"\n{'='*80}")
+            print(f"ABLATION RUN {idx}/3 (train={train_mode}) COMPLETED SUCCESSFULLY")
+            print(f"{'='*80}\n")
 
         print(f"\n{'='*80}")
         print("ALL ABLATIONS COMPLETE")
