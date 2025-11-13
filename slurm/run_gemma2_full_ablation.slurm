@@ -10,21 +10,19 @@
 #SBATCH --time=48:00:00
 
 # ============================================================================
-# FULL ABLATION STUDY - Train Each Mode Separately
+# ABLATION STUDY - Train Single Mode
 # ============================================================================
-# This script runs 3 separate training runs with all_ablations mode:
-#   1. both/both - Train with both tokens, eval both + frozen_baseline
-#   2. global_only/global_only - Train with global only, eval global_only + frozen_baseline
-#   3. local_only/local_only - Train with local only, eval local_only + frozen_baseline
+# This script trains with a single ablation mode (default: both tokens).
+# Change --train-ablation-mode to run different ablations:
+#   - both: Train with both global + local tokens (default)
+#   - global_only: Train with only global tokens
+#   - local_only: Train with only local tokens
 #
 # This approach trains each ablation mode from scratch, allowing the model
 # to adapt to the available visual information during training, providing
 # more accurate ablation results than test-time masking.
 #
-# Output structure:
-#   $OUT_DIR/ablation_both/
-#   $OUT_DIR/ablation_global_only/
-#   $OUT_DIR/ablation_local_only/
+# To run all ablations, submit 3 separate SLURM jobs with different modes.
 # ============================================================================
 
 module purge
@@ -56,13 +54,18 @@ WARMUP=888
 mkdir -p "$(dirname "$OUT_DIR")" logs
 
 echo "============================================================================"
-echo "FULL ABLATION STUDY: Train Each Mode Separately"
+echo "FULL ABLATION STUDY: Train with Both Tokens"
 echo "============================================================================"
 echo "Model: $LM_NAME"
-echo "Training Modes: all_ablations (both, global_only, local_only)"
-echo "Evaluation: Each mode + frozen_baseline"
+echo "Training Mode: both (global + local tokens)"
+echo "Evaluation: both + frozen_baseline"
 echo "Starting: $(date)"
 echo "============================================================================"
+echo ""
+echo "NOTE: To run other ablations, change --train-ablation-mode to:"
+echo "  - global_only: Train with only global tokens"
+echo "  - local_only: Train with only local tokens"
+echo ""
 
 torchrun --nproc_per_node=4 scripts/llm_finetuning/next_utt_social_ooo_fix.py \
   --parent-dir "$PARENT_DIR" \
@@ -89,8 +92,8 @@ torchrun --nproc_per_node=4 scripts/llm_finetuning/next_utt_social_ooo_fix.py \
   --train-id-list "/home/kgarci18/data_lisik3/kgarci18/ooo/train_ids.txt" \
   --test-id-list "/home/kgarci18/data_lisik3/kgarci18/ooo/test_ids.txt" \
   --val-frac-of-train 0.2 \
-  --train-ablation-mode all_ablations \
-  --eval-ablations frozen_baseline
+  --train-ablation-mode both \
+  --eval-ablations both frozen_baseline
 
 EXIT_CODE=$?
 
@@ -103,21 +106,18 @@ echo "==========================================================================
 if [ $EXIT_CODE -eq 0 ]; then
     echo "SUCCESS! Check results at: $OUT_DIR/"
     echo ""
-    echo "Output structure:"
-    echo "  $OUT_DIR/ablation_both/ - Train with both tokens"
-    echo "  $OUT_DIR/ablation_global_only/ - Train with global only"
-    echo "  $OUT_DIR/ablation_local_only/ - Train with local only"
-    echo ""
-    echo "Verification checklist for each subdirectory:"
+    echo "Verification checklist:"
     echo "1. Check logs/examples_*.json for generation quality"
     echo "2. Check logs/metrics.csv for perplexity values"
     echo "3. Check checkpoints/ for saved models"
     echo ""
-    echo "Expected results:"
+    echo "Expected results (gemma-2-2b):"
     echo "  both:            ~2-4 PPL (best)"
-    echo "  global_only:     ~5-10 PPL (good)"
-    echo "  local_only:      ~8-10 PPL (moderate)"
-    echo "  frozen_baseline: ~108-207 PPL (baseline, varies by model)"
+    echo "  frozen_baseline: ~207 PPL (baseline)"
+    echo ""
+    echo "To run other ablations, submit separate jobs with:"
+    echo "  --train-ablation-mode global_only  (expected ~5-10 PPL)"
+    echo "  --train-ablation-mode local_only   (expected ~8-10 PPL)"
 else
     echo "FAILED! Check error logs for details."
 fi

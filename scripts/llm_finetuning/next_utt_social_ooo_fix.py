@@ -2764,119 +2764,14 @@ def main():
         print(f"[all_ablations] Expanded eval_ablations to: {eval_ablations}")
 
     # Handle "all_ablations" for train_ablation_mode
+    # NOTE: This mode is not recommended for distributed training due to NCCL issues.
+    # It's better to run each ablation separately in its own SLURM job.
     if args.train_ablation_mode == "all_ablations":
-        # When running under torchrun, only rank 0 should spawn subprocesses
-        # All other ranks should exit immediately to avoid conflicts
-        current_rank = int(os.environ.get("RANK", "0"))
-
-        if current_rank != 0:
-            print(f"[Rank {current_rank}] Exiting early - only rank 0 spawns ablation subprocesses")
-            return
-
         print(f"\n{'='*80}")
-        print("ALL ABLATIONS MODE: Running 3 separate training runs in subprocesses")
+        print("WARNING: all_ablations mode not recommended - run each ablation separately")
+        print("Use --train-ablation-mode both/global_only/local_only in separate jobs")
         print(f"{'='*80}\n")
-
-        ablation_configs = [
-            ("both", ["both", "frozen_baseline"]),
-            ("global_only", ["global_only", "frozen_baseline"]),
-            ("local_only", ["local_only", "frozen_baseline"])
-        ]
-
-        # Build base command arguments from current args (excluding train-ablation-mode)
-        script_path = os.path.abspath(__file__)
-
-        # Determine if we're running under torchrun by checking for RANK env var
-        is_distributed = "RANK" in os.environ and "WORLD_SIZE" in os.environ
-
-        # Clean environment for subprocesses - remove parent's distributed variables
-        clean_env = os.environ.copy()
-        # Remove torchrun/distributed environment variables to avoid conflicts
-        for key in ['RANK', 'LOCAL_RANK', 'WORLD_SIZE', 'LOCAL_WORLD_SIZE',
-                    'MASTER_ADDR', 'MASTER_PORT', 'TORCHELASTIC_RUN_ID',
-                    'TORCHELASTIC_RESTART_COUNT', 'TORCHELASTIC_MAX_RESTARTS']:
-            clean_env.pop(key, None)
-
-        # Build common arguments
-        common_args = [
-            "--parent-dir", args.parent_dir,
-            "--col-transcript", args.col_transcript,
-            "--visual-mode", args.visual_mode,
-            "--train-frac", str(args.train_frac),
-            "--val-frac", str(args.val_frac),
-            "--epochs", str(args.epochs),
-            "--batch-size", str(args.batch_size),
-            "--lm-name", args.lm_name,
-            "--dino-name", args.dino_name,
-            "--dino-tune-mode", args.dino_tune_mode,
-            "--lr-proj", str(args.lr_proj),
-            "--lr-dino", str(args.lr_dino),
-            "--warmup-steps", str(args.warmup_steps),
-            "--log-interval", str(args.log_interval),
-            "--save-every-epochs", str(args.save_every_epochs),
-            "--dino-local-batch", str(args.dino_local_batch),
-        ]
-
-        # Add optional arguments
-        if args.dino_checkpoint:
-            common_args.extend(["--dino-checkpoint", args.dino_checkpoint])
-        if args.dino_checkpoint_key:
-            common_args.extend(["--dino-checkpoint-key", args.dino_checkpoint_key])
-        if args.caption_nextword:
-            common_args.append("--caption-nextword")
-        if args.save_adapter_only:
-            common_args.append("--save-adapter-only")
-        if args.train_id_list:
-            common_args.extend(["--train-id-list", args.train_id_list])
-        if args.test_id_list:
-            common_args.extend(["--test-id-list", args.test_id_list])
-        if args.val_id_list:
-            common_args.extend(["--val-id-list", args.val_id_list])
-        if args.val_frac_of_train:
-            common_args.extend(["--val-frac-of-train", str(args.val_frac_of_train)])
-
-        for idx, (train_mode, eval_modes) in enumerate(ablation_configs, 1):
-            print(f"\n{'='*80}")
-            print(f"ABLATION RUN {idx}/3: train={train_mode}, eval={eval_modes}")
-            print(f"{'='*80}\n")
-
-            # Create subdirectory for this ablation run
-            ablation_output_dir = os.path.join(args.output_dir, f"ablation_{train_mode}")
-
-            # Build command for this specific ablation
-            run_args = common_args + [
-                "--output-dir", ablation_output_dir,
-                "--train-ablation-mode", train_mode,
-                "--eval-ablations"
-            ] + eval_modes
-
-            if is_distributed:
-                # Running under torchrun - need to spawn torchrun subprocess
-                nproc = os.environ.get("WORLD_SIZE", "1")
-                cmd = ["torchrun", f"--nproc_per_node={nproc}", script_path] + run_args
-            else:
-                # Running without torchrun - direct python subprocess
-                cmd = [sys.executable, script_path] + run_args
-
-            print(f"[Subprocess] Command: {' '.join(cmd)}\n")
-
-            # Run subprocess and wait for completion (with clean environment)
-            result = subprocess.run(cmd, env=clean_env)
-
-            if result.returncode != 0:
-                print(f"\n{'='*80}")
-                print(f"ERROR: Ablation run {idx}/3 (train={train_mode}) FAILED with exit code {result.returncode}")
-                print(f"{'='*80}\n")
-                sys.exit(result.returncode)
-
-            print(f"\n{'='*80}")
-            print(f"ABLATION RUN {idx}/3 (train={train_mode}) COMPLETED SUCCESSFULLY")
-            print(f"{'='*80}\n")
-
-        print(f"\n{'='*80}")
-        print("ALL ABLATIONS COMPLETE")
-        print(f"{'='*80}\n")
-        return  # Exit after running all ablations
+        sys.exit(1)
 
     # Normal single ablation run
     train_and_eval(
