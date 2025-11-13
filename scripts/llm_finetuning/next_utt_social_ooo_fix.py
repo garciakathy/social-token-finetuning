@@ -1293,11 +1293,19 @@ def generate_examples(
     max_new_tokens: int = 50,
     inject_visuals: bool = True,
     ablation_mode: str = "both",
-    rank: int = 0
+    rank: int = 0,
+    select_mode: str = "first"
 ):
     """
     Generate text predictions for examples to compare with ground truth.
     Returns a list of dicts with prompt_text, ground_truth, generated_text, loss, and perplexity.
+
+    Args:
+        select_mode: How to select examples to return:
+            - "first": Return first num_examples encountered (default, fast)
+            - "best": Return num_examples with lowest PPL (requires full pass)
+            - "worst": Return num_examples with highest PPL (requires full pass)
+            - "best_and_worst": Return best and worst examples (num_examples split evenly)
     """
     if rank != 0:
         return []  # Only generate on rank 0
@@ -1307,9 +1315,12 @@ def generate_examples(
     projector.eval()
     dino.eval()
 
+    # Determine if we need to iterate through all examples
+    need_full_pass = select_mode in ["best", "worst", "best_and_worst"]
+
     with torch.no_grad():
         for batch_idx, batch in enumerate(test_loader):
-            if len(examples) >= num_examples:
+            if not need_full_pass and len(examples) >= num_examples:
                 break
 
             if batch["input_ids"].size(0) == 0:
@@ -1514,8 +1525,25 @@ def generate_examples(
                     "perplexity": round(example_ppl, 2)
                 })
 
-            if len(examples) >= num_examples:
+            if not need_full_pass and len(examples) >= num_examples:
                 break
+
+    # Sort and select examples based on select_mode
+    if select_mode == "best":
+        # Sort by perplexity (ascending) and take top num_examples
+        examples.sort(key=lambda x: x["perplexity"])
+        examples = examples[:num_examples]
+    elif select_mode == "worst":
+        # Sort by perplexity (descending) and take top num_examples
+        examples.sort(key=lambda x: x["perplexity"], reverse=True)
+        examples = examples[:num_examples]
+    elif select_mode == "best_and_worst":
+        # Sort by perplexity and take best half + worst half
+        examples.sort(key=lambda x: x["perplexity"])
+        n_half = num_examples // 2
+        best_examples = examples[:n_half]
+        worst_examples = examples[-n_half:]
+        examples = best_examples + worst_examples
 
     return examples
 
@@ -1554,7 +1582,8 @@ def generate_examples_frozen(
     device,
     num_examples: int = 20,
     max_new_tokens: int = 50,
-    rank: int = 0
+    rank: int = 0,
+    select_mode: str = "first"
 ) -> List[Dict[str, Any]]:
     """
     Generate examples using a frozen pretrained LLM (no training).
@@ -1563,6 +1592,13 @@ def generate_examples_frozen(
     Only runs on rank 0 to save memory.
 
     Key: Loads fresh tokenizer to avoid special token vocab issues.
+
+    Args:
+        select_mode: How to select examples to return:
+            - "first": Return first num_examples encountered (default, fast)
+            - "best": Return num_examples with lowest PPL (requires full pass)
+            - "worst": Return num_examples with highest PPL (requires full pass)
+            - "best_and_worst": Return best and worst examples (num_examples split evenly)
     """
     if rank != 0:
         return []
@@ -1596,9 +1632,12 @@ def generate_examples_frozen(
     examples = []
     debug_count = 0
 
+    # Determine if we need to iterate through all examples
+    need_full_pass = select_mode in ["best", "worst", "best_and_worst"]
+
     with torch.no_grad():
         for batch in test_loader:
-            if len(examples) >= num_examples:
+            if not need_full_pass and len(examples) >= num_examples:
                 break
 
             input_ids = batch["input_ids"].to(device)
@@ -1721,12 +1760,29 @@ def generate_examples_frozen(
                     "perplexity": round(example_ppl, 2)
                 })
 
-            if len(examples) >= num_examples:
+            if not need_full_pass and len(examples) >= num_examples:
                 break
 
     # Free memory
     del frozen_lm, frozen_tokenizer
     torch.cuda.empty_cache()
+
+    # Sort and select examples based on select_mode
+    if select_mode == "best":
+        # Sort by perplexity (ascending) and take top num_examples
+        examples.sort(key=lambda x: x["perplexity"])
+        examples = examples[:num_examples]
+    elif select_mode == "worst":
+        # Sort by perplexity (descending) and take top num_examples
+        examples.sort(key=lambda x: x["perplexity"], reverse=True)
+        examples = examples[:num_examples]
+    elif select_mode == "best_and_worst":
+        # Sort by perplexity and take best half + worst half
+        examples.sort(key=lambda x: x["perplexity"])
+        n_half = num_examples // 2
+        best_examples = examples[:n_half]
+        worst_examples = examples[-n_half:]
+        examples = best_examples + worst_examples
 
     print(f"[Frozen Baseline Generation] Generated {len(examples)} examples")
     return examples
@@ -1776,7 +1832,8 @@ def train_and_eval(
     caption_nextword: bool,
     train_id_list: str, val_id_list: str, test_id_list: str, val_frac_of_train: float,
     train_ablation_mode: str,
-    eval_ablations: List[str]
+    eval_ablations: List[str],
+    example_select_mode: str = "first"
 ):
     is_dist, rank, local_rank, world, device = init_distributed()
     if rank == 0: print(f"[DDP] is_dist={is_dist} world={world} device={device}")
@@ -2690,6 +2747,8 @@ def train_and_eval(
 
         # === GENERATION EXAMPLES ===
         print("\n[Generating example predictions...]")
+        if example_select_mode != "first":
+            print(f"[Example Selection] Mode: {example_select_mode} (will iterate through full test set)")
         all_examples = {}
         for abl_mode in eval_ablations:
             if abl_mode == "frozen_baseline":
@@ -2701,7 +2760,8 @@ def train_and_eval(
                     device=device,
                     num_examples=20,
                     max_new_tokens=50,
-                    rank=rank
+                    rank=rank,
+                    select_mode=example_select_mode
                 )
             else:
                 # Use trained model for generation
@@ -2718,7 +2778,8 @@ def train_and_eval(
                     max_new_tokens=50,
                     inject_visuals=inject,
                     ablation_mode=abl_mode,
-                    rank=rank
+                    rank=rank,
+                    select_mode=example_select_mode
                 )
             all_examples[abl_mode] = examples
 
@@ -2828,6 +2889,9 @@ def main():
     ap.add_argument("--eval-ablations", type=str, nargs="+", default=["both", "frozen_baseline"],
                     choices=["both", "global_only", "local_only", "none", "frozen_baseline", "all_ablations"],
                     help="List of ablation modes to evaluate (default: both frozen_baseline). 'frozen_baseline' loads a fresh pretrained model for fair text-only comparison. 'all_ablations' expands to [both, global_only, local_only, frozen_baseline].")
+    ap.add_argument("--example-select-mode", type=str, default="first",
+                    choices=["first", "best", "worst", "best_and_worst"],
+                    help="How to select generation examples: 'first' (default, first 20 encountered), 'best' (20 with lowest PPL), 'worst' (20 with highest PPL), 'best_and_worst' (10 best + 10 worst).")
 
     args = ap.parse_args()
 
@@ -2867,7 +2931,8 @@ def main():
         metrics_csv=args.metrics_csv, resume_path=args.resume, save_every_epochs=args.save_every_epochs,
         save_adapter_only=args.save_adapter_only, grad_clip=args.grad_clip, align_eps=args.align_eps,
         caption_nextword=args.caption_nextword, train_id_list=args.train_id_list, val_id_list=args.val_id_list, test_id_list=args.test_id_list, val_frac_of_train=args.val_frac_of_train,
-        train_ablation_mode=args.train_ablation_mode, eval_ablations=eval_ablations
+        train_ablation_mode=args.train_ablation_mode, eval_ablations=eval_ablations,
+        example_select_mode=args.example_select_mode
     )
 
 if __name__ == "__main__":
