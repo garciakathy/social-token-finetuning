@@ -1289,15 +1289,15 @@ def generate_examples(
     test_loader,
     device,
     visual_mode: str,
-    num_examples: int = 5,
+    num_examples: int = 20,
     max_new_tokens: int = 50,
     inject_visuals: bool = True,
     ablation_mode: str = "both",
     rank: int = 0
 ):
     """
-    Generate text predictions for a few examples to compare with ground truth.
-    Returns a list of dicts with prompt_text, ground_truth, and generated_text.
+    Generate text predictions for examples to compare with ground truth.
+    Returns a list of dicts with prompt_text, ground_truth, generated_text, loss, and perplexity.
     """
     if rank != 0:
         return []  # Only generate on rank 0
@@ -1468,11 +1468,50 @@ def generate_examples(
                 # Decode generated text (only the new tokens)
                 generated_text = tokenizer.decode(generated_ids[0, first_target_pos:], skip_special_tokens=True)
 
+                # Calculate per-example PPL by computing loss on ground truth
+                with torch.no_grad():
+                    # Create a mini-batch with just this example
+                    single_input_ids = input_ids[b:b+1]
+                    single_attn_mask = attention_mask[b:b+1]
+                    single_labels = labels[b:b+1]
+
+                    # Build embeddings with visual tokens (same as in training)
+                    emb = gemma_model.lm.get_input_embeddings()(single_input_ids)
+
+                    if inject_visuals:
+                        # Inject global token
+                        if ablation_mode in ("both", "global_only") and gen_proj_g is not None:
+                            pos_g = (single_input_ids == gemma_model.id_soc_g).nonzero(as_tuple=False)
+                            if pos_g.numel() > 0:
+                                b_idx = pos_g[:, 0]
+                                t_idx = pos_g[:, 1]
+                                emb[b_idx, t_idx, :] = gen_proj_g[b_idx, :].to(dtype=emb.dtype)
+
+                        # Inject local tokens
+                        if ablation_mode in ("both", "local_only") and gen_proj_l is not None and gen_proj_l[0] is not None:
+                            lpos = (single_input_ids[0] == gemma_model.id_soc_l).nonzero(as_tuple=False).squeeze(-1)
+                            if lpos.numel() > 0:
+                                L = min(lpos.numel(), gen_proj_l[0].size(0))
+                                emb[0, lpos[:L], :] = gen_proj_l[0][:L, :].to(dtype=emb.dtype)
+
+                    # Forward pass to get loss
+                    outputs = gemma_model.lm(
+                        inputs_embeds=emb,
+                        attention_mask=single_attn_mask,
+                        labels=single_labels
+                    )
+
+                    # Calculate PPL from loss
+                    example_loss = outputs.loss.item() if outputs.loss is not None else float('nan')
+                    example_ppl = math.exp(example_loss) if not math.isnan(example_loss) else float('nan')
+
                 examples.append({
                     "prompt_text": prompt_text,
                     "ground_truth": ground_truth,
                     "generated_text": generated_text,
-                    "ablation_mode": ablation_mode
+                    "ablation_mode": ablation_mode,
+                    "loss": round(example_loss, 4),
+                    "perplexity": round(example_ppl, 2)
                 })
 
             if len(examples) >= num_examples:
@@ -1491,6 +1530,9 @@ def print_examples(examples: List[Dict], ablation_mode: str):
         print(f"Prompt: {ex['prompt_text'][:150]}{'...' if len(ex['prompt_text']) > 150 else ''}")
         print(f"\nGround Truth:\n  {ex['ground_truth']}")
         print(f"\nGenerated:\n  {ex['generated_text']}")
+        # Print PPL if available
+        if 'perplexity' in ex and 'loss' in ex:
+            print(f"\nLoss: {ex['loss']:.4f} | PPL: {ex['perplexity']:.2f}")
         print("-" * 80)
 
     print("="*80 + "\n")
@@ -1510,7 +1552,7 @@ def generate_examples_frozen(
     tokenizer,
     test_loader,
     device,
-    num_examples: int = 5,
+    num_examples: int = 20,
     max_new_tokens: int = 50,
     rank: int = 0
 ) -> List[Dict[str, Any]]:
@@ -1636,11 +1678,47 @@ def generate_examples_frozen(
                 prompt_len = frozen_prompt_ids.size(1)
                 generated_text = frozen_tokenizer.decode(generated_ids[0, prompt_len:], skip_special_tokens=True)
 
+                # Calculate per-example PPL by computing loss on ground truth
+                # Re-create the full sequence with ground truth targets
+                target_ids = labels[b][label_mask]
+                # Prepare full sequence: prompt + ground truth
+                full_input = input_ids[b:b+1, :first_target_pos + target_ids.size(0)]
+
+                # Strip social tokens from full input
+                keep_mask_full = (full_input[0] != soc_g_id) & (full_input[0] != soc_l_id)
+                full_input_stripped = full_input[0, keep_mask_full]
+
+                # Decode and re-tokenize with frozen tokenizer
+                full_text = tokenizer.decode(full_input_stripped, skip_special_tokens=True)
+                full_text = re.sub(r'\[CAP\]:\s*', '', full_text).rstrip()
+
+                frozen_full_encoded = frozen_tokenizer(
+                    full_text,
+                    return_tensors="pt",
+                    add_special_tokens=True
+                ).to(device)
+
+                # Create labels for loss calculation (only predict target tokens, not prompt)
+                frozen_labels = frozen_full_encoded["input_ids"].clone()
+                frozen_labels[:, :prompt_len] = -100  # Mask prompt tokens
+
+                # Forward pass to get loss
+                loss_outputs = frozen_lm(
+                    input_ids=frozen_full_encoded["input_ids"],
+                    attention_mask=frozen_full_encoded["attention_mask"],
+                    labels=frozen_labels
+                )
+
+                example_loss = loss_outputs.loss.item() if loss_outputs.loss is not None else float('nan')
+                example_ppl = math.exp(example_loss) if not math.isnan(example_loss) else float('nan')
+
                 examples.append({
                     "prompt_text": prompt_text,
                     "ground_truth": ground_truth,
                     "generated_text": generated_text,
-                    "ablation_mode": "frozen_baseline"
+                    "ablation_mode": "frozen_baseline",
+                    "loss": round(example_loss, 4),
+                    "perplexity": round(example_ppl, 2)
                 })
 
             if len(examples) >= num_examples:
@@ -2621,7 +2699,7 @@ def train_and_eval(
                     tokenizer=gemma.tokenizer,
                     test_loader=test_loader,
                     device=device,
-                    num_examples=5,
+                    num_examples=20,
                     max_new_tokens=50,
                     rank=rank
                 )
@@ -2636,7 +2714,7 @@ def train_and_eval(
                     test_loader=test_loader,
                     device=device,
                     visual_mode=visual_mode,
-                    num_examples=5,
+                    num_examples=20,
                     max_new_tokens=50,
                     inject_visuals=inject,
                     ablation_mode=abl_mode,
