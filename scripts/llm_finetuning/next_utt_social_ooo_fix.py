@@ -2765,6 +2765,14 @@ def main():
 
     # Handle "all_ablations" for train_ablation_mode
     if args.train_ablation_mode == "all_ablations":
+        # When running under torchrun, only rank 0 should spawn subprocesses
+        # All other ranks should exit immediately to avoid conflicts
+        current_rank = int(os.environ.get("RANK", "0"))
+
+        if current_rank != 0:
+            print(f"[Rank {current_rank}] Exiting early - only rank 0 spawns ablation subprocesses")
+            return
+
         print(f"\n{'='*80}")
         print("ALL ABLATIONS MODE: Running 3 separate training runs in subprocesses")
         print(f"{'='*80}\n")
@@ -2780,6 +2788,14 @@ def main():
 
         # Determine if we're running under torchrun by checking for RANK env var
         is_distributed = "RANK" in os.environ and "WORLD_SIZE" in os.environ
+
+        # Clean environment for subprocesses - remove parent's distributed variables
+        clean_env = os.environ.copy()
+        # Remove torchrun/distributed environment variables to avoid conflicts
+        for key in ['RANK', 'LOCAL_RANK', 'WORLD_SIZE', 'LOCAL_WORLD_SIZE',
+                    'MASTER_ADDR', 'MASTER_PORT', 'TORCHELASTIC_RUN_ID',
+                    'TORCHELASTIC_RESTART_COUNT', 'TORCHELASTIC_MAX_RESTARTS']:
+            clean_env.pop(key, None)
 
         # Build common arguments
         common_args = [
@@ -2844,8 +2860,8 @@ def main():
 
             print(f"[Subprocess] Command: {' '.join(cmd)}\n")
 
-            # Run subprocess and wait for completion
-            result = subprocess.run(cmd, env=os.environ.copy())
+            # Run subprocess and wait for completion (with clean environment)
+            result = subprocess.run(cmd, env=clean_env)
 
             if result.returncode != 0:
                 print(f"\n{'='*80}")
