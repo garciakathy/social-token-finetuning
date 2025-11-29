@@ -7,8 +7,8 @@ NEW:
 
 Vectors (recommended here):
 - For each caption row, creates (len(words)-1) samples:
-    prompt = <SOC_G> [CAP]: w1 [<SOC_L>?] ... w_{i-1} [<SOC_L>?] [CAP]:
-    target = [CAP]: w_i
+    prompt = <SOC_G> w1 [<SOC_L>?] ... w_{i-1} [<SOC_L>?]
+    target = w_i
   Inline <SOC_L> appears only after prefix words whose meta idx appear in locals_npz.
 - global_vec is (768,) .npy per caption
 - locals_npz has 768-D vectors keyed by word idx (int or string with a number inside)
@@ -23,6 +23,11 @@ from the input sequence to create a fair text-only baseline. This prevents the m
 seeing meaningless token embeddings and provides an accurate perplexity comparison.
 Previous behavior: kept social token text but didn't inject visual embeddings (broken model).
 New behavior: removes social token text entirely (clean text-only baseline).
+
+[CAP] MARKER REMOVAL (2025-11-29):
+Removed [CAP]: formatting markers that were artifacts from the Seamless dialogue dataset.
+These markers allowed the model to "cheat" by memorizing trivial pattern tokens, artificially
+reducing perplexity. Now measures actual content prediction ability.
 """
 
 import os, re, math, json, argparse, time, csv, pickle, sys, random, subprocess
@@ -633,7 +638,6 @@ def build_caption_nextword_rows(rows: list[dict[str,Any]],
                                 col_transcript: str = "",
                                 align_eps: float = 0.5) -> list[dict[str,Any]]:
     out = []
-    CAP = "CAP"
     for r in rows:
         # Accept either a file path OR raw caption text (string in the CSV cell)
         tval = r.get(col_transcript) if col_transcript else pick_first_path(
@@ -672,13 +676,17 @@ def build_caption_nextword_rows(rows: list[dict[str,Any]],
             else:
                 prompt_inline, used_ids = (" ".join([w.get("text","") for w in prefix]).strip(), [])
 
-            prompt_text = f"{SOC_G} [{CAP}]: {prompt_inline} [{CAP}]: "
-            target_text = f"[{CAP}]: {words[i].get('text','').strip()}"
+            # NOTE: Removed [CAP]: markers to prevent model from "cheating" by memorizing
+            # trivial formatting patterns. This ensures perplexity measures actual content
+            # prediction ability, not pattern matching.
+            prompt_text = f"{SOC_G} {prompt_inline}"
+            # Leading space ensures natural tokenization (word appears mid-sentence)
+            target_text = f" {words[i].get('text','').strip()}"
 
             out.append({
                 "scene_root": r.get("clip_id"),
                 "clip_id": r.get("clip_id"),
-                "participant": CAP,
+                "participant": "caption",
                 "prompt_text": prompt_text,
                 "target_text": target_text,
                 "global_frames": [],
