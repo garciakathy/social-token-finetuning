@@ -924,7 +924,11 @@ class Collator:
             enc_t = self.tok(target + self.tok.eos_token, add_special_tokens=False)
             ids = (enc_p["input_ids"] + enc_t["input_ids"])[: self.max_len]
             attn = [1]*len(ids)
-            labels = ([-100]*len(enc_p["input_ids"]) + enc_t["input_ids"])[: self.max_len]
+            # Mask EOS token from labels - don't train the model to predict EOS for next-word task
+            target_labels = enc_t["input_ids"].copy()
+            if target_labels and target_labels[-1] == self.tok.eos_token_id:
+                target_labels[-1] = -100  # Mask EOS token
+            labels = ([-100]*len(enc_p["input_ids"]) + target_labels)[: self.max_len]
 
             input_ids_list.append(ids); attn_list.append(attn); labels_list.append(labels)
             global_frames_batch.append(s.get("global_frames") or [])
@@ -1524,8 +1528,17 @@ def generate_examples(
 
                     next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
 
+                    # Debug: Print first predicted token for all examples
+                    if step == 0 and len(examples) < 5:
+                        decoded_token = tokenizer.decode([next_token.item()])
+                        print(f"  [DEBUG] First predicted token: ID={next_token.item()}, Text='{decoded_token}', "
+                              f"Is EOS? {next_token.item() == tokenizer.eos_token_id}, "
+                              f"Is PAD? {next_token.item() == tokenizer.pad_token_id}")
+
                     # Stop on EOS or pad
                     if next_token.item() in [tokenizer.eos_token_id, tokenizer.pad_token_id]:
+                        if step == 0 and len(examples) < 5:
+                            print(f"  [DEBUG] Stopping on first token! Generated nothing.")
                         break
 
                     # Append to sequence
