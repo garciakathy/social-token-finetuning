@@ -1496,6 +1496,18 @@ def generate_examples(
                     outputs = gemma_model.lm(inputs_embeds=emb, attention_mask=gen_attn_mask, output_attentions=debug_this_example)
                     next_token_logits = outputs.logits[0, -1, :]
 
+                    # Apply repetition penalty to prevent loops
+                    repetition_penalty = 1.2
+                    if generated_ids.size(1) > 1:
+                        # Get unique tokens generated so far (excluding prompt)
+                        prev_tokens = generated_ids[0, first_target_pos:].unique()
+                        for token_id in prev_tokens:
+                            # Penalize tokens that were already generated
+                            if next_token_logits[token_id] > 0:
+                                next_token_logits[token_id] /= repetition_penalty
+                            else:
+                                next_token_logits[token_id] *= repetition_penalty
+
                     # Debug: Analyze logits
                     if debug_this_example:
                         probs = torch.softmax(next_token_logits, dim=-1)
@@ -2838,7 +2850,7 @@ def train_and_eval(
                     test_loader=test_loader,
                     device=device,
                     num_examples=20,
-                    max_new_tokens=50,
+                    max_new_tokens=10,  # Reduced for next-word prediction (not full sentences)
                     rank=rank,
                     select_mode=example_select_mode
                 )
@@ -2854,7 +2866,7 @@ def train_and_eval(
                     device=device,
                     visual_mode=visual_mode,
                     num_examples=20,
-                    max_new_tokens=50,
+                    max_new_tokens=10,  # Reduced for next-word prediction (not full sentences)
                     inject_visuals=inject,
                     ablation_mode=abl_mode,
                     rank=rank,
