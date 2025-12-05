@@ -93,7 +93,7 @@ torchrun --nproc_per_node=4 scripts/llm_finetuning/next_utt_social_ooo_fix.py \
   --test-id-list "/home/kgarci18/data_lisik3/kgarci18/ooo/test_ids.txt" \
   --val-frac-of-train 0.2 \
   --train-ablation-mode both \
-  --eval-ablations both frozen_baseline
+  --eval-ablations both global_only local_only frozen_baseline
 
 EXIT_CODE=$?
 
@@ -111,13 +111,14 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo "2. Check logs/metrics.csv for perplexity values"
     echo "3. Check checkpoints/ for saved models"
     echo ""
-    echo "Expected results (gemma-2-2b):"
-    echo "  both:            ~2-4 PPL (best)"
-    echo "  frozen_baseline: ~207 PPL (baseline)"
+    echo "Expected results (gemma-2-2b with [CAP] removed):"
+    echo "  both:            ~35-40 PPL (best - all tokens)"
+    echo "  global_only:     ~50-80 PPL (no local tokens)"
+    echo "  local_only:      ~50-80 PPL (no global token)"
+    echo "  frozen_baseline: ~165 PPL (worst - no training)"
     echo ""
-    echo "To run other ablations, submit separate jobs with:"
-    echo "  --train-ablation-mode global_only  (expected ~5-10 PPL)"
-    echo "  --train-ablation-mode local_only   (expected ~8-10 PPL)"
+    echo "Results will be in format:"
+    echo "  [TEST] ppl: both=X.XX | global_only=Y.YY | local_only=Z.ZZ | frozen_baseline=W.WW"
 else
     echo "FAILED! Check error logs for details."
 fi

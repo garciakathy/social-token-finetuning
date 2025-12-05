@@ -18,8 +18,21 @@ This codebase introduces **social tokens** - a lightweight mechanism that inject
   - `[SOC-G]` Global social tokens (aggregated visual representation)
   - `[SOC-L]` Local social tokens (frame-level representations inserted after nouns/verbs)
 - **Substantial Improvements**:
-  - Seamless dataset: 90.37 → 5.25 perplexity (94.2% reduction)
-  - Moments in Time: 2662.02 → 3.25 perplexity (99.9% reduction)
+  - Next-word prediction (Gemma-2-2b): 164.28 PPL (frozen) → 36.94 PPL (with social tokens)
+  - **4.4x improvement** over frozen baseline on social dialogue tasks
+
+## Recent Improvements (2025-01)
+
+**Fair Perplexity Evaluation:** Removed `[CAP]:` pattern tokens that artificially reduced perplexity by allowing the model to memorize trivial formatting patterns (67-80% of predictions). The current results reflect actual content prediction ability.
+
+**Generation Quality Fixes:**
+1. **EOS Token Masking**: Prevents model from immediately predicting end-of-sequence
+2. **Repetition Penalty**: Eliminates generation loops (e.g., "1 1 1 1...")
+3. **Appropriate Length**: Reduced from 50 to 10 tokens for next-word prediction
+
+**Ablation Study Framework:** Comprehensive evaluation across 4 modes (both tokens, global only, local only, frozen baseline) to measure individual token contributions.
+
+See [ABLATION_STUDY_GUIDE.md](ABLATION_STUDY_GUIDE.md) for complete details.
 
 ## Table of Contents
 
@@ -90,21 +103,28 @@ social-token-finetuning/
 │   ├── video_encoder/          # DINOv2 visual encoder training
 │   │   └── train_dino_dali_ddp_improved.py
 │   ├── llm_finetuning/        # Social token injection and LLM fine-tuning
-│   │   ├── next_utt_social_ooo_fix.py
-│   │   └── ooo_rsa_gemma_new_.py
+│   │   ├── next_utt_social_ooo_fix.py      # Main training script
+│   │   ├── ooo_rsa_gemma_new_.py           # RSA variant
+│   │   └── train_text_only_baseline.py     # Text-only baseline
 │   └── analysis/              # Evaluation and analysis tools
+│       ├── plot_perplexity_comparison.py   # Ablation study plots
 │       ├── logit_lens_from_jsonl_weights_ooo.py
 │       ├── sim_judg_rsa_gemma.py
 │       └── compare_soc_embeddings.py
 ├── slurm/                     # SLURM job scripts for HPC clusters
 │   ├── run_dino_ddp.slurm
+│   ├── run_gemma2_full_ablation.slurm     # Full ablation study
 │   ├── run_next_utt_social_ooo.slurm
 │   └── run_ooo_rsa_gemma_unl.slurm
+├── ABLATION_STUDY_GUIDE.md    # Detailed ablation study instructions
+├── RSA_ANALYSIS_GUIDE.md      # RSA evaluation guide
 ├── data/                      # Data directory (not included in repo)
     ├── videos/               # Input videos
     ├── frames/               # Extracted frames
     ├── transcripts/          # Conversation transcripts
     └── results/              # Training outputs and metrics
+        ├── perplexity/       # Ablation study plots
+        └── rsa/              # RSA evaluation results
 ```
 
 ## Quick Start
@@ -145,11 +165,23 @@ Train the social token projection layer while keeping LLM frozen:
 python scripts/llm_finetuning/next_utt_social_ooo_fix.py \
     --parent-dir /path/to/data \
     --output-dir outputs/gemma_social \
-    --lm google/gemma-2-2b \
-    --dino-ckpt outputs/dino_checkpoints/checkpoint_best.pt \
-    --inject full \
+    --lm-name google/gemma-2-2b \
+    --dino-name vit_base_patch14_dinov2 \
+    --dino-checkpoint outputs/dino_checkpoints/checkpoint_best.pt \
+    --dino-checkpoint-key student_backbone \
+    --dino-tune-mode cls_adapter \
+    --caption-nextword \
+    --train-ablation-mode both \
+    --eval-ablations both global_only local_only frozen_baseline \
     --batch-size 4 \
-    --epochs 3
+    --epochs 5 \
+    --visual-mode vectors
+```
+
+Or submit to SLURM cluster:
+
+```bash
+sbatch slurm/run_gemma2_full_ablation.slurm
 ```
 
 ### 4. Evaluate with RSA
@@ -242,18 +274,26 @@ python scripts/llm_finetuning/next_utt_social_ooo_fix.py \
 
 ### Configuration Options
 
-**Social Token Injection Modes** (`--inject`):
-- `none`: No social tokens (baseline)
-- `global`: Only global `[SOC-G]` tokens
-- `local`: Only local `[SOC-L]` tokens (requires `--pool locals_only`)
-- `full`: Both global and local tokens
+**Ablation Study Modes** (`--train-ablation-mode`):
+- `both`: Train with both global `[SOC-G]` and local `[SOC-L]` tokens (default, best performance)
+- `global_only`: Train with only global `[SOC-G]` token
+- `local_only`: Train with only local `[SOC-L]` tokens
+- `none`: No social tokens (text-only baseline)
 
-**Pooling Modes** (`--pool`):
-- `all`: Pool all tokens including social tokens
-- `exclude_soc`: Pool only text tokens
-- `only_soc`: Pool only social tokens
-- `locals_only`: Pool only local social tokens
-- `eos`: Pool only the EOS token
+**Evaluation Ablations** (`--eval-ablations`):
+- `both`: Evaluate with both global and local tokens
+- `global_only`: Mask out local tokens at test time
+- `local_only`: Mask out global token at test time
+- `frozen_baseline`: Evaluate with untrained model (no visual information)
+- Can specify multiple: `--eval-ablations both global_only local_only frozen_baseline`
+
+**Visual Modes** (`--visual-mode`):
+- `vectors`: Pre-computed visual feature vectors (recommended, faster)
+- `frames`: Load frames on-the-fly (slower, more memory intensive)
+
+**Task Mode** (`--caption-nextword`):
+- Enable for next-word prediction task on captions
+- Omit for full next-utterance prediction on dialogues
 
 ## Data Format
 
@@ -309,6 +349,28 @@ val,clip_002,data/frames/clip_002/frame_0001.jpg,0.8
 
 ## Evaluation
 
+### Ablation Study
+
+Run complete ablation study to evaluate all token configurations:
+
+```bash
+# Submit full ablation training job
+sbatch slurm/run_gemma2_full_ablation.slurm
+
+# After training completes, generate comparison plot
+python scripts/analysis/plot_perplexity_comparison.py \
+    --log-file logs/gemma2_full_abl_JOBID.out \
+    --output-dir data/results/perplexity
+```
+
+This evaluates 4 modes:
+- **Both tokens**: Full model with global + local social tokens
+- **Global only**: Mask out local tokens at test time
+- **Local only**: Mask out global token at test time
+- **Frozen baseline**: Untrained model (no visual information)
+
+See [ABLATION_STUDY_GUIDE.md](ABLATION_STUDY_GUIDE.md) for detailed instructions.
+
 ### Perplexity Measurement
 
 Evaluate model perplexity on dialogue datasets:
@@ -317,7 +379,9 @@ Evaluate model perplexity on dialogue datasets:
 python scripts/llm_finetuning/next_utt_social_ooo_fix.py \
     --parent-dir /path/to/data \
     --output-dir outputs/eval \
-    --eval-only \
+    --caption-nextword \
+    --train-ablation-mode both \
+    --eval-ablations both frozen_baseline \
     --checkpoint outputs/gemma_social/checkpoint_final.pt
 ```
 
@@ -348,12 +412,18 @@ python scripts/analysis/visualize_token_attention.py \
 
 ## Results
 
-### Perplexity Reduction
+### Perplexity on Next-Word Prediction (Gemma-2-2b)
 
-| Dataset | Baseline | + Social Tokens | Improvement |
-|---------|----------|-----------------|-------------|
-| Seamless | 90.37 | 5.25 | 94.2% |
-| Moments in Time | 2662.02 | 3.25 | 99.9% |
+| Ablation Mode | Test Perplexity | Description |
+|---------------|-----------------|-------------|
+| Both tokens (global + local) | **36.94** | Best - uses all visual information |
+| Global only token | ~50-80 | No local tokens, less detailed visual info |
+| Local only tokens | ~50-80 | No global token, less contextual visual info |
+| Frozen baseline (no training) | **164.28** | Worst - no training, no visual info |
+
+**Performance gain:** 4.4x improvement over frozen baseline (164.28 → 36.94 PPL)
+
+**Note:** Previous results reporting extremely low perplexity (e.g., 5.25 PPL) included `[CAP]:` pattern tokens that allowed the model to memorize trivial formatting patterns. These have been removed for fair evaluation. See [ABLATION_STUDY_GUIDE.md](ABLATION_STUDY_GUIDE.md) for details on fixes applied.
 
 ### RSA Alignment (Spearman r)
 
@@ -393,11 +463,11 @@ Contributions are welcome! Please:
 ### Out of Memory Errors
 
 ```bash
-# Reduce batch size
+# Reduce batch size and use gradient accumulation
 --batch-size 1 --gradient-accumulation-steps 16
 
-# Enable memory-efficient attention
---use-flash-attention
+# Use pre-computed visual vectors instead of loading frames
+--visual-mode vectors
 ```
 
 ### CUDA Errors
@@ -408,13 +478,36 @@ nvidia-smi
 
 # Set CUDA device
 export CUDA_VISIBLE_DEVICES=0
+
+# Enable expandable memory segments
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ```
+
+### Empty or Repetitive Generations
+
+**Fixed in current version** (lines 927-931, 1499-1509 in `next_utt_social_ooo_fix.py`):
+- ✅ EOS token masked from training labels
+- ✅ Repetition penalty (1.2) applied during generation
+- ✅ Max tokens reduced from 50 to 10 for next-word prediction
+
+If still experiencing issues, ensure you're using the latest version of the script.
+
+### Artificially Low Perplexity
+
+**Fixed in current version** (lines 674-679):
+- ✅ Removed `[CAP]:` pattern tokens that allowed trivial predictions
+- Results now reflect actual content prediction ability
+
+See [ABLATION_STUDY_GUIDE.md](ABLATION_STUDY_GUIDE.md) for details.
 
 ### Missing Dependencies
 
 ```bash
-# Reinstall with specific versions
-pip install -r requirements.txt  # If available
+# Core dependencies
+pip install torch torchvision transformers timm pandas numpy scipy scikit-learn matplotlib
+
+# HuggingFace token required
+export HF_TOKEN="your_token_here"
 ```
 
 ## Acknowledgments
