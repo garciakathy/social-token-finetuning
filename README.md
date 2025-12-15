@@ -147,11 +147,45 @@ Fine-tune DINOv2 on social interaction frames:
 
 ```bash
 # Single GPU
-python scripts/video_encoder/train_dino_dali_ddp_improved.py \
-    --manifest data/manifests/train.csv \
-    --out_dir outputs/dino_checkpoints \
-    --batch-size 32 \
-    --epochs 100
+python -m torch.distributed.run --standalone --nnodes=1 --nproc-per-node=1 \
+    scripts/video_encoder/train_dino_dali_ddp_improved.py \
+    --manifest ~/data_lisik3/kgarci18/seamless/full/preprocess/naturalistic/train/manifest.csv \
+    --out_dir ~/data_lisik3/kgarci18/seamless/outputs/dino_checkpoints \
+    --epochs 100 \
+    --patience 10 \
+    --model_name vit_base_patch14_dinov2 \
+    --global_size 518 \
+    --local_size 518 \
+    --global_area 0.40 1.00 \
+    --local_area 0.05 0.25 \
+    --global_crops 2 \
+    --local_crops 8 \
+    --accum_steps 2 \
+    --num_workers 8 \
+    --amp
+
+# Multi-GPU with DDP (4 GPUs)
+python -m torch.distributed.run --standalone --nnodes=1 --nproc-per-node=4 \
+    scripts/video_encoder/train_dino_dali_ddp_improved.py \
+    --manifest ~/data_lisik3/kgarci18/seamless/full/preprocess/naturalistic/train/manifest.csv \
+    --out_dir ~/data_lisik3/kgarci18/seamless/outputs/dino_checkpoints \
+    --epochs 100 \
+    --patience 10 \
+    --model_name vit_base_patch14_dinov2 \
+    --global_size 518 \
+    --local_size 518 \
+    --global_area 0.40 1.00 \
+    --local_area 0.05 0.25 \
+    --global_crops 2 \
+    --local_crops 8 \
+    --accum_steps 2 \
+    --num_workers 8 \
+    --teacher_t_warmup 0.04 \
+    --teacher_t_end 0.07 \
+    --teacher_warmup_epochs 30 \
+    --teacher_momentum_start 0.996 \
+    --teacher_momentum_end 0.9995 \
+    --amp
 
 # Multi-GPU with SLURM
 sbatch slurm/run_dino_ddp.slurm
