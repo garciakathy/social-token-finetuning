@@ -158,7 +158,9 @@ def format_json(data: dict) -> dict:
             {"text": w["word"], "start": float(w["start"]), "end": float(w["end"])}
             for seg in data.get("metadata:transcript", [])
             for w in seg.get("words", [])
-            if "word" in w and "start" in w and "end" in w and float(w["end"]) <= 120.0
+            if "word" in w and "start" in w and "end" in w
+               and w["start"] is not None and w["end"] is not None
+               and float(w["end"]) <= 120.0
         ]
     }
 

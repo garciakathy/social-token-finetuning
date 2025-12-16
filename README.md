@@ -129,19 +129,7 @@ social-token-finetuning/
 
 ## Quick Start
 
-### 1. Preprocess Video Data
-
-Extract frames and compute visual features from video files:
-
-```bash
-python scripts/preprocessing/build_scene_packs.py \
-    --input-dir /path/to/videos \
-    --output-dir /path/to/output \
-    --fps 1 \
-    --extract-features
-```
-
-### 2. Train Visual Encoder (DINOv2)
+### 1. Train Visual Encoder (DINOv2)
 
 Fine-tune DINOv2 on social interaction frames:
 
@@ -189,6 +177,19 @@ python -m torch.distributed.run --standalone --nnodes=1 --nproc-per-node=4 \
 
 # Multi-GPU with SLURM
 sbatch slurm/run_dino_ddp.slurm
+```
+
+### 2. Preprocess Video Data
+
+Extract frames and compute visual features using the trained DINO encoder:
+
+```bash
+python scripts/preprocessing/build_scene_packs.py \
+    --root_split_dir ~/data_lisik3/kgarci18/seamless/full/preprocess/naturalistic/train \
+    --out_dir ~/data_lisik3/kgarci18/seamless/outputs/scene_packs \
+    --dino_ckpt ~/data_lisik3/kgarci18/seamless/outputs/dino_run_20250816_134333/best_dino_vit_base_patch14_dinov2.pt \
+    --model_name vit_base_patch14_dinov2.lvd142m \
+    --fps 1.0
 ```
 
 ### 3. Fine-tune LLM with Social Tokens
